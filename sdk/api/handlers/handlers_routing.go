@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -13,6 +14,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
+
+var resolveAutoRoute = autoroute.Resolve
 
 // PluginModelRouterHost routes matching requests to a plugin executor, the router's own executor,
 // or a built-in provider before model-to-provider resolution and auth selection.
@@ -302,6 +305,30 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 	// No detector: treat routing as disabled (same conservative default as before any
 	// ModelRouter existed). Hosts that route must implement HasModelRouters (pluginhost.Host does).
 	return false
+}
+
+func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtocol, modelName string, rawJSON []byte) string {
+	if h == nil || h.Cfg == nil || !h.Cfg.AutoRouting.Enabled {
+		return modelName
+	}
+	if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		return modelName
+	}
+
+	suffix := thinking.ParseSuffix(modelName)
+	if suffix.ModelName != "auto" && !strings.HasPrefix(suffix.ModelName, "auto:") {
+		return modelName
+	}
+
+	prompt := autoroute.ExtractPrompt(entryProtocol, rawJSON, h.Cfg.AutoRouting.MaxPromptChars)
+	resolvedModel := resolveAutoRoute(ctx, h.Cfg.AutoRouting, h.Cfg, prompt)
+	if resolvedModel == "" {
+		return modelName
+	}
+	if suffix.HasSuffix {
+		return fmt.Sprintf("%s(%s)", resolvedModel, suffix.RawSuffix)
+	}
+	return resolvedModel
 }
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
