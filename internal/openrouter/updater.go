@@ -36,6 +36,12 @@ func (c *Catalog) StartUpdater(ctx context.Context, options UpdaterOptions) {
 
 	cfg := options.Config.CloneForRuntime()
 	localModels := append([]string(nil), options.LocalModels...)
+	if len(localModels) == 0 {
+		// Default to the built-in catalog so callers do not have to know the
+		// per-channel model getters. Without this the mapping and unpriced-model
+		// audits would silently report nothing.
+		localModels = builtinLocalModelNames()
+	}
 	if !cfg.OpenRouter.Enabled {
 		c.logUnpricedModels(localModels, cfg)
 		return
