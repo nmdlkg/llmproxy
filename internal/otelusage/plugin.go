@@ -40,6 +40,7 @@ type Options struct {
 	ServiceName        string
 	ServiceVersion     string
 	Environment        string
+	HostName           string
 	ResourceAttributes map[string]string
 }
 
@@ -283,7 +284,7 @@ func normalizeOptions(options Options) (Options, error) {
 	}
 	endpointURL, errParse := url.Parse(options.Endpoint)
 	if errParse != nil {
-		return Options{}, fmt.Errorf("otel usage: parse endpoint: %w", errParse)
+		return Options{}, fmt.Errorf("otel usage: endpoint is not a valid URL")
 	}
 	if (endpointURL.Scheme != "http" && endpointURL.Scheme != "https") || endpointURL.Host == "" {
 		return Options{}, fmt.Errorf("otel usage: endpoint must be an absolute HTTP(S) URL")
@@ -297,26 +298,45 @@ func normalizeOptions(options Options) (Options, error) {
 	options.ServiceName = normalizedResourceValue(options.ServiceName, DefaultServiceName)
 	options.ServiceVersion = normalizedResourceValue(options.ServiceVersion, "unknown")
 	options.Environment = normalizedResourceValue(options.Environment, "unknown")
+	options.HostName = normalizedResourceValue(options.HostName, "unknown")
 
-	resourceAttributes := make(map[string]string, len(options.ResourceAttributes))
-	for key, value := range options.ResourceAttributes {
+	resourceAttributes, errAttributes := NormalizeResourceAttributes(options.ResourceAttributes)
+	if errAttributes != nil {
+		return Options{}, errAttributes
+	}
+	options.ResourceAttributes = resourceAttributes
+	return options, nil
+}
+
+// NormalizeResourceAttributes trims process-static resource attributes and
+// rejects names owned by the exporter or forbidden for security/cardinality.
+// Config sanitization uses this function so the reserved-name list stays here.
+func NormalizeResourceAttributes(attributes map[string]string) (map[string]string, error) {
+	if len(attributes) == 0 {
+		return nil, nil
+	}
+	resourceAttributes := make(map[string]string, len(attributes))
+	for key, value := range attributes {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if key == "" || value == "" {
 			continue
 		}
 		if forbiddenAttributeName(key) {
-			return Options{}, fmt.Errorf("otel usage: resource attribute %q is forbidden", key)
+			return nil, fmt.Errorf("otel usage: resource attribute %q is forbidden", key)
 		}
 		resourceAttributes[key] = value
 	}
-	options.ResourceAttributes = resourceAttributes
-	return options, nil
+	if len(resourceAttributes) == 0 {
+		return nil, nil
+	}
+	return resourceAttributes, nil
 }
 
 func forbiddenAttributeName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "auth_id", "auth_index", "api_key", "request_id", "alias":
+	case "service.name", "service.version", "deployment.environment", "host.name",
+		"auth_id", "auth_index", "api_key", "request_id", "alias":
 		return true
 	default:
 		return false
@@ -339,9 +359,7 @@ func resourceFromOptions(options Options) *sdkresource.Resource {
 	values["service.name"] = options.ServiceName
 	values["service.version"] = options.ServiceVersion
 	values["deployment.environment"] = options.Environment
-	if strings.TrimSpace(values["host.name"]) == "" {
-		values["host.name"] = "unknown"
-	}
+	values["host.name"] = options.HostName
 
 	attributes := make([]attribute.KeyValue, 0, len(values))
 	for key, value := range values {

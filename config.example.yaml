@@ -125,6 +125,22 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# OTLP/HTTP usage metric export. This is applied at process startup; restart the
+# proxy after changing it. The endpoint is required when enabled and has no
+# implicit default. Port 4328 is the conventional dedicated collector port for
+# this deployment (4317/4318 serve laptop tools; 4319/4320 serve Tempo).
+otel:
+  enabled: false
+  # Example: http://collector.tailnet:4328
+  endpoint: ""
+  export-interval: "15s"
+  service-name: "llmproxy"
+  # Empty derives the version from build metadata when available.
+  service-version: ""
+  environment: ""
+  # Process-static labels only. Reserved service/deployment/host names are rejected.
+  resource-attributes: {}
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.
@@ -200,8 +216,11 @@ tenancy:
   enabled: false
   # Empty defaults to <auth-dir>/../tenancy.db
   db-path: ""
-  # How often a user's own credential is preferred for their request, so their
-  # OAuth token gets validated by real traffic instead of a synthetic probe.
+  # NOT YET IMPLEMENTED. Intended to control how often a user's own credential
+  # is preferred for their request so their OAuth token gets validated by real
+  # traffic instead of a synthetic probe. The credential-selection seam exists
+  # (PreferredAuthIDsMetadataKey) but nothing sets it yet, so this value is
+  # currently read by nothing and changing it has no effect.
   validation-interval: "1h"
   quota:
     # false = observe-only: usage is still attributed and recorded, but no

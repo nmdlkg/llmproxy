@@ -610,7 +610,7 @@ func main() {
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
 	serverOptions := []api.ServerOption{
 		api.WithTenancyService(),
-		api.WithOTelUsageFromEnvironment(),
+		api.WithOTelUsage(),
 	}
 	if exampleAPIKeySafeMode {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)

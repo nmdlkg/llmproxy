@@ -206,7 +206,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 	if optionState.otelUsageEnabled {
-		otelOptions, errOptions := otelUsageOptionsFromEnvironment()
+		otelOptions, usedEnvironmentFallback, errOptions := otelUsageOptions(cfg)
+		if usedEnvironmentFallback {
+			warnOTelEnvironmentFallback()
+		}
 		if errOptions != nil {
 			s.otelUsageInitErr = errOptions
 			log.WithError(errOptions).Error("failed to configure OpenTelemetry usage export")
@@ -296,6 +299,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: engine,
+	}
+	if optionState.otelUsageEnabled {
+		armOTelReloadNotice()
 	}
 
 	return s

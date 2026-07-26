@@ -205,7 +205,17 @@ func TestNewDisabledCreatesNoPlugin(t *testing.T) {
 }
 
 func TestNormalizeOptionsRejectsForbiddenResourceAttributes(t *testing.T) {
-	for _, name := range []string{"auth_id", "auth_index", "api_key", "request_id", "alias"} {
+	for _, name := range []string{
+		"service.name",
+		"service.version",
+		"deployment.environment",
+		"host.name",
+		"auth_id",
+		"auth_index",
+		"api_key",
+		"request_id",
+		"alias",
+	} {
 		t.Run(name, func(t *testing.T) {
 			_, errNormalize := normalizeOptions(Options{
 				Enabled:  true,

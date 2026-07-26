@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -19,6 +21,12 @@ import (
 )
 
 const otelUsagePluginName = "otelusage"
+
+var (
+	otelEnvironmentFallbackWarning sync.Once
+	otelReloadNotice               sync.Once
+	otelReloadNoticeArmed          atomic.Bool
+)
 
 type otelUsageSink struct {
 	mu     sync.RWMutex
@@ -45,6 +53,64 @@ func (s *otelUsageSink) detach() *otelusage.Plugin {
 	s.plugin = nil
 	s.mu.Unlock()
 	return plugin
+}
+
+func otelUsageOptions(cfg *config.Config) (options otelusage.Options, usedEnvironmentFallback bool, err error) {
+	if cfg != nil && cfg.OTel != nil {
+		options, err = otelUsageOptionsFromConfig(cfg.OTel)
+		return options, false, err
+	}
+
+	enabledValue, enabledSet := os.LookupEnv("LLMPROXY_OTEL_ENABLED")
+	options, err = otelUsageOptionsFromEnvironment()
+	return options, enabledSet && strings.TrimSpace(enabledValue) != "", err
+}
+
+func otelUsageOptionsFromConfig(otelConfig *config.OTelConfig) (otelusage.Options, error) {
+	if otelConfig == nil || !otelConfig.Enabled {
+		return otelusage.Options{}, nil
+	}
+
+	exportInterval := otelusage.DefaultExportInterval
+	intervalValue := strings.TrimSpace(otelConfig.ExportInterval)
+	if intervalValue != "" {
+		interval, errInterval := time.ParseDuration(intervalValue)
+		if errInterval != nil {
+			return otelusage.Options{}, fmt.Errorf("parse otel.export-interval: %w", errInterval)
+		}
+		if interval <= 0 {
+			return otelusage.Options{}, fmt.Errorf("otel.export-interval must be positive")
+		}
+		exportInterval = interval
+	}
+
+	hostName, errHostName := os.Hostname()
+	if errHostName != nil {
+		return otelusage.Options{}, fmt.Errorf("resolve host name for OpenTelemetry resource: %w", errHostName)
+	}
+
+	serviceVersion := strings.TrimSpace(otelConfig.ServiceVersion)
+	if serviceVersion == "" {
+		serviceVersion = strings.TrimSpace(buildinfo.Version)
+	}
+	var resourceAttributes map[string]string
+	if len(otelConfig.ResourceAttributes) > 0 {
+		resourceAttributes = make(map[string]string, len(otelConfig.ResourceAttributes))
+		for key, value := range otelConfig.ResourceAttributes {
+			resourceAttributes[key] = value
+		}
+	}
+
+	return otelusage.Options{
+		Enabled:            true,
+		Endpoint:           strings.TrimSpace(otelConfig.Endpoint),
+		ExportInterval:     exportInterval,
+		ServiceName:        strings.TrimSpace(otelConfig.ServiceName),
+		ServiceVersion:     serviceVersion,
+		Environment:        strings.TrimSpace(otelConfig.Environment),
+		HostName:           hostName,
+		ResourceAttributes: resourceAttributes,
+	}, nil
 }
 
 func otelUsageOptionsFromEnvironment() (otelusage.Options, error) {
@@ -89,10 +155,27 @@ func otelUsageOptionsFromEnvironment() (otelusage.Options, error) {
 		ServiceName:    otelusage.DefaultServiceName,
 		ServiceVersion: buildinfo.Version,
 		Environment:    strings.TrimSpace(os.Getenv("LLMPROXY_OTEL_ENVIRONMENT")),
-		ResourceAttributes: map[string]string{
-			"host.name": hostName,
-		},
+		HostName:       hostName,
 	}, nil
+}
+
+func warnOTelEnvironmentFallback() {
+	otelEnvironmentFallbackWarning.Do(func() {
+		log.Warn("LLMPROXY_OTEL_* is deprecated; configure the otel section instead")
+	})
+}
+
+func armOTelReloadNotice() {
+	otelReloadNoticeArmed.Store(true)
+}
+
+func noteOTelConfigReload() {
+	if !otelReloadNoticeArmed.Load() {
+		return
+	}
+	otelReloadNotice.Do(func() {
+		log.Info("OpenTelemetry usage export is startup-only; otel configuration changes require a restart")
+	})
 }
 
 func tenancyUsageEmailResolver(service *tenancy.Service) otelusage.UserEmailResolver {
