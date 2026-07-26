@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/openrouter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
@@ -34,9 +35,13 @@ func ForcedFallback(ctx context.Context) bool {
 // ModelAvailable reports whether a configured model has a live registration.
 type ModelAvailable func(string) bool
 
+// ModelRanker reorders tier candidates best-first. Returning nil or an empty
+// slice means "no opinion"; the caller then uses configured order.
+type ModelRanker func(category string, candidates []string) []string
+
 // Decide maps a valid classification to the first live model in its configured tier.
 // It is pure: callers provide the liveness snapshot through modelAvailable.
-func Decide(cfg config.AutoRoutingConfig, classification Classification, forcedFallback bool, modelAvailable ModelAvailable) string {
+func Decide(cfg config.AutoRoutingConfig, classification Classification, forcedFallback bool, modelAvailable ModelAvailable, rankers ...ModelRanker) string {
 	if modelAvailable == nil {
 		return ""
 	}
@@ -53,6 +58,13 @@ func Decide(cfg config.AutoRoutingConfig, classification Classification, forcedF
 	}
 
 	if tier, ok := cfg.Tiers[tierName]; ok {
+		var ranker ModelRanker
+		if len(rankers) > 0 {
+			ranker = rankers[0]
+		}
+		if rankedModel := firstAvailableRankedModel(category, tier.Models, modelAvailable, ranker); rankedModel != "" {
+			return rankedModel
+		}
 		for _, model := range tier.Models {
 			model = strings.TrimSpace(model)
 			if model != "" && modelAvailable(model) {
@@ -61,6 +73,30 @@ func Decide(cfg config.AutoRoutingConfig, classification Classification, forcedF
 		}
 	}
 	return availableFallback(cfg, modelAvailable)
+}
+
+func firstAvailableRankedModel(category string, configured []string, modelAvailable ModelAvailable, ranker ModelRanker) string {
+	if ranker == nil || len(configured) == 0 {
+		return ""
+	}
+
+	allowed := make(map[string]struct{}, len(configured))
+	for _, model := range configured {
+		if model = strings.TrimSpace(model); model != "" {
+			allowed[model] = struct{}{}
+		}
+	}
+	ranked := ranker(category, append([]string(nil), configured...))
+	for _, model := range ranked {
+		model = strings.TrimSpace(model)
+		if _, ok := allowed[model]; !ok {
+			continue
+		}
+		if modelAvailable(model) {
+			return model
+		}
+	}
+	return ""
 }
 
 func availableFallback(cfg config.AutoRoutingConfig, modelAvailable ModelAvailable) string {
@@ -132,6 +168,74 @@ func (c *decisionCache) put(text string, configKey [32]byte, model string, ttl t
 	c.mu.Unlock()
 }
 
+func modelRanker(proxyCfg *config.SDKConfig) ModelRanker {
+	if proxyCfg == nil {
+		return nil
+	}
+	return openRouterModelRanker(proxyCfg.OpenRouter, openrouter.CurrentSnapshot())
+}
+
+func openRouterModelRanker(cfg config.OpenRouterConfig, snapshot openrouter.Snapshot) ModelRanker {
+	// openrouter.enabled is the master switch: when it is false the catalog is
+	// documented as fully inert, so benchmark ranking must not silently reorder
+	// candidates from the embedded snapshot.
+	if !cfg.Enabled {
+		return nil
+	}
+	source := openrouter.BenchmarkSource(strings.ToLower(strings.TrimSpace(cfg.BenchmarkSource)))
+	switch source {
+	case openrouter.BenchmarkArtificialAnalysis, openrouter.BenchmarkDesignArena:
+	default:
+		return nil
+	}
+
+	perDollarOptions := openrouter.RankOptions{
+		Mode:     openrouter.RankByScorePerDollar,
+		Source:   source,
+		ModelMap: cfg.ModelMap,
+	}
+	rawOptions := perDollarOptions
+	rawOptions.Mode = openrouter.RankByRawScore
+
+	return func(category string, candidates []string) []string {
+		task := taskTypeForCategory(category)
+		ranked := openrouter.RankModels(task, candidates, snapshot, perDollarOptions)
+		if !hasKnownRankingScore(ranked) {
+			ranked = openrouter.RankModels(task, candidates, snapshot, rawOptions)
+		}
+		if !hasKnownRankingScore(ranked) {
+			return nil
+		}
+
+		models := make([]string, 0, len(ranked))
+		for _, model := range ranked {
+			models = append(models, model.LocalModel)
+		}
+		return models
+	}
+}
+
+func hasKnownRankingScore(ranked []openrouter.RankedModel) bool {
+	for _, model := range ranked {
+		if model.RankingScore.Known {
+			return true
+		}
+	}
+	return false
+}
+
+func taskTypeForCategory(category string) openrouter.TaskType {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "agent", "agents", "agentic", "tool-use", "tool_use", "tool use":
+		return openrouter.TaskAgentic
+	case "code", "coding", "programming", "software", "software-development", "software_development",
+		"software development", "computer-science", "computer_science", "computer science", "debug", "debugging":
+		return openrouter.TaskCoding
+	default:
+		return openrouter.TaskIntelligence
+	}
+}
+
 type classifyFunc func(context.Context, config.AutoRoutingConfig, *config.SDKConfig, string) Classification
 
 // Resolver adds classification and TTL caching around the pure decision function.
@@ -159,13 +263,13 @@ func (r *Resolver) Resolve(ctx context.Context, cfg config.AutoRoutingConfig, pr
 		return ""
 	}
 	if ForcedFallback(ctx) {
-		return Decide(cfg, Classification{}, true, r.modelAvailable)
+		return Decide(cfg, Classification{}, true, r.modelAvailable, nil)
 	}
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
 
-	configKey := routingConfigKey(cfg)
+	configKey := routingConfigKey(cfg, proxyCfg)
 	if cached, ok := r.cache.get(text, configKey, r.modelAvailable); ok {
 		return cached
 	}
@@ -174,13 +278,24 @@ func (r *Resolver) Resolve(ctx context.Context, cfg config.AutoRoutingConfig, pr
 	if !classification.Valid {
 		return ""
 	}
-	model := Decide(cfg, classification, false, r.modelAvailable)
+	model := Decide(cfg, classification, false, r.modelAvailable, modelRanker(proxyCfg))
 	r.cache.put(text, configKey, model, time.Duration(cfg.CacheTTLSeconds)*time.Second)
 	return model
 }
 
-func routingConfigKey(cfg config.AutoRoutingConfig) [32]byte {
-	encoded, errMarshal := json.Marshal(cfg)
+func routingConfigKey(cfg config.AutoRoutingConfig, proxyCfg *config.SDKConfig) [32]byte {
+	routingConfig := struct {
+		AutoRouting     config.AutoRoutingConfig `json:"auto_routing"`
+		BenchmarkSource string                   `json:"benchmark_source,omitempty"`
+		ModelMap        map[string]string        `json:"model_map,omitempty"`
+	}{
+		AutoRouting: cfg,
+	}
+	if proxyCfg != nil {
+		routingConfig.BenchmarkSource = proxyCfg.OpenRouter.BenchmarkSource
+		routingConfig.ModelMap = proxyCfg.OpenRouter.ModelMap
+	}
+	encoded, errMarshal := json.Marshal(routingConfig)
 	if errMarshal != nil {
 		return [32]byte{}
 	}

@@ -253,3 +253,36 @@ func TestUsagePluginLedgerAndConfiguredWindowFallback(t *testing.T) {
 		t.Fatalf("window source = %q, want configured fallback source", window.Source)
 	}
 }
+
+// TestModelPricingForRespectsOpenRouterMasterSwitch pins the master-switch
+// contract: openrouter.enabled=false is documented as leaving quota behaviour
+// unchanged, so cost-basis: openrouter must degrade to overrides-only instead
+// of silently pricing from the embedded snapshot.
+func TestModelPricingForRespectsOpenRouterMasterSwitch(t *testing.T) {
+	// A model present in the embedded snapshot, so the catalog lookup can succeed.
+	const model = "gpt-4o"
+	modelMap := map[string]string{model: "openai/gpt-4o"}
+
+	disabled := config.TenancyConfig{}
+	disabled.Pricing.Enabled = false
+	disabled.Pricing.CostBasis = "openrouter"
+	disabled.Pricing.ModelMap = modelMap
+
+	enabled := disabled
+	enabled.Pricing.Enabled = true
+
+	gotDisabled := ModelPricingFor(model, disabled)
+	if gotDisabled.PromptNanoUSDPerToken.Known {
+		t.Fatalf("disabled catalog produced a known prompt price (%d nano-USD); enabled must gate the catalog",
+			gotDisabled.PromptNanoUSDPerToken.NanoUSD)
+	}
+
+	gotEnabled := ModelPricingFor(model, enabled)
+	if !gotEnabled.PromptNanoUSDPerToken.Known {
+		t.Fatal("enabled catalog did not price a model present in the embedded snapshot")
+	}
+	// $2.50 / 1M tokens == 2500 nano-USD per token, exactly.
+	if gotEnabled.PromptNanoUSDPerToken.NanoUSD != 2500 {
+		t.Fatalf("prompt price = %d nano-USD, want 2500", gotEnabled.PromptNanoUSDPerToken.NanoUSD)
+	}
+}
