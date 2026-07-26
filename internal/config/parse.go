@@ -99,6 +99,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeTenancyConfig()
+	cfg.SanitizeAutoRoutingConfig()
+	cfg.SanitizeOpenRouterConfig()
 
 	return &cfg, nil
 }

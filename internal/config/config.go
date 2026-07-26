@@ -154,4 +154,11 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// Tenancy configures multi-user credential ownership, per-user quota, and
+	// quota-window-aware credential balancing. Disabled by default.
+	//
+	// This stays on Config rather than SDKConfig: tenancy is a server-side concern
+	// and is only consumed from internal/api, which holds the full Config.
+	Tenancy TenancyConfig `yaml:"tenancy" json:"tenancy"`
 }

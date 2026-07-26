@@ -171,6 +171,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
+	// Normalize multi-user tenancy settings and apply defaults.
+	cfg.SanitizeTenancyConfig()
+
+	// Normalize automatic model routing settings and apply defaults.
+	cfg.SanitizeAutoRoutingConfig()
+
+	// Normalize OpenRouter catalog settings and apply defaults.
+	cfg.SanitizeOpenRouterConfig()
+
 	// Return the populated configuration struct.
 	return &cfg, nil
 }
