@@ -91,6 +91,8 @@ func main() {
 	var tuiMode bool
 	var standalone bool
 	var localModel bool
+	var remote string
+	var userKey string
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
@@ -110,6 +112,8 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
+	flag.StringVar(&remote, "remote", "", "Store a login credential on a remote CLIProxyAPI server")
+	flag.StringVar(&userKey, "user-key", "", "User API key for --remote credential storage")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -146,6 +150,16 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
+	loginCommand := antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	remoteRequested := strings.TrimSpace(remote) != "" || strings.TrimSpace(userKey) != ""
+	if remoteRequested && !loginCommand {
+		log.Error("--remote and --user-key may only be used with a provider login flag")
+		return
+	}
+	if remoteRequested && (strings.TrimSpace(remote) == "" || strings.TrimSpace(userKey) == "") {
+		log.Error("--remote and --user-key must be provided together")
+		return
+	}
 
 	// Core application variables.
 	var err error
@@ -260,6 +274,11 @@ func main() {
 	}
 	if value, ok := lookupEnv("OBJECTSTORE_LOCAL_PATH", "objectstore_local_path"); ok {
 		objectStoreLocalPath = value
+	}
+	if remoteRequested {
+		usePostgresStore = false
+		useObjectStore = false
+		useGitStore = false
 	}
 
 	// Check for cloud deploy mode only on first execution
@@ -600,7 +619,14 @@ func main() {
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.
-	if usePostgresStore {
+	if remoteRequested {
+		remoteStore, errRemoteStore := cmd.NewRemoteStore(remote, userKey)
+		if errRemoteStore != nil {
+			log.WithError(errRemoteStore).Error("failed to configure remote credential storage")
+			return
+		}
+		sdkAuth.RegisterTokenStore(remoteStore)
+	} else if usePostgresStore {
 		sdkAuth.RegisterTokenStore(pgStoreInst)
 	} else if useObjectStore {
 		sdkAuth.RegisterTokenStore(objectStoreInst)

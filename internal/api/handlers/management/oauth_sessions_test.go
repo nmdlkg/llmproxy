@@ -27,6 +27,23 @@ func TestOAuthSessionStoreCompleteKeepsShortLivedSession(t *testing.T) {
 	}
 }
 
+func TestOAuthSessionStoreBindsInitiatingUser(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, store)
+	RegisterOAuthSessionForUser("user-state", "codex", "user-a")
+
+	if !OAuthSessionBelongsTo("user-state", "user-a") {
+		t.Fatal("session does not belong to its initiating user")
+	}
+	if OAuthSessionBelongsTo("user-state", "user-b") {
+		t.Fatal("session belongs to a different user")
+	}
+	store.Register("management-state", "codex")
+	if OAuthSessionBelongsTo("management-state", "user-a") {
+		t.Fatal("management session unexpectedly belongs to a user")
+	}
+}
+
 func TestOAuthSessionStoreCompleteDoesNotExtendCompletedSession(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	store.Register("completed-state", "codex")

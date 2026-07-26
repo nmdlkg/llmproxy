@@ -173,6 +173,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+	s.registerUserRoutes()
 }
 
 func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHost {
