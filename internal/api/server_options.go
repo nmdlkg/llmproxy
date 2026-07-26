@@ -27,6 +27,8 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
+	tenancyEnabled        bool
+	otelUsageEnabled      bool
 }
 
 // ServerOption customises HTTP server construction.
@@ -131,5 +133,21 @@ func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOpti
 func WithExampleAPIKeySafeMode() ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.exampleAPIKeySafeMode = true
+	}
+}
+
+// WithTenancyService enables tenancy lifecycle bootstrap from the server's
+// loaded configuration. A disabled tenancy config remains a no-op.
+func WithTenancyService() ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.tenancyEnabled = true
+	}
+}
+
+// WithOTelUsageFromEnvironment enables optional OTLP/HTTP usage metrics
+// bootstrap from the LLMPROXY_OTEL_* environment variables.
+func WithOTelUsageFromEnvironment() ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.otelUsageEnabled = true
 	}
 }

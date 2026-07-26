@@ -1,0 +1,15 @@
+services:
+  semantic-router:
+    image: ghcr.io/vllm-project/semantic-router:latest
+    restart: unless-stopped
+    environment:
+      CUDA_VISIBLE_DEVICES: ""
+      HF_HOME: /models
+      TRANSFORMERS_CACHE: /models
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - semantic-router-models:/models
+
+volumes:
+  semantic-router-models:
