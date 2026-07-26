@@ -31,6 +31,7 @@ type Service struct {
 	quota       *Quota
 	usagePlugin *UsagePlugin
 	usageSink   *serviceUsageSink
+	balancing   *balancingRuntime
 
 	closeOnce sync.Once
 	closeErr  error
@@ -60,19 +61,38 @@ func NewService(cfg config.TenancyConfig, authDir string, authManager *coreauth.
 		return nil, fmt.Errorf("tenancy service: create quota: %w", errQuota)
 	}
 
+	var balancing Balancing
+	if authManager != nil {
+		var errBalancing error
+		balancing, errBalancing = ParseBalancing(cfg.Balancing)
+		if errBalancing != nil {
+			if errClose := store.Close(); errClose != nil {
+				return nil, errors.Join(
+					fmt.Errorf("tenancy service: parse balancing: %w", errBalancing),
+					fmt.Errorf("tenancy service: close store after balancing failure: %w", errClose),
+				)
+			}
+			return nil, fmt.Errorf("tenancy service: parse balancing: %w", errBalancing)
+		}
+	}
+
 	usagePlugin := NewUsagePlugin(store, cfg, withContextUser(ResolveAPIKeyUser(store)))
 	usageSink := &serviceUsageSink{plugin: usagePlugin}
-	usage.RegisterPlugin(usageSink)
-
-	// TODO: Do not install Balancer through Manager.SetPriorityResolver here.
-	// The scheduler invokes that resolver while holding its mutex, so the
-	// resolver must use precomputed state and must never call authManager.List.
-	return &Service{
+	service := &Service{
 		store:       store,
 		quota:       quota,
 		usagePlugin: usagePlugin,
 		usageSink:   usageSink,
-	}, nil
+	}
+	if authManager != nil {
+		// The scheduler calls the installed resolver while holding its mutex.
+		// balancingRuntime keeps Manager/store access in its background loop and
+		// exposes only an immutable atomic snapshot to that lock-held callback.
+		service.balancing = startBalancingRuntime(store, balancing, authManager, defaultBalancingInterval)
+		usagePlugin.quotaWindowUpdated = service.TriggerBalancing
+	}
+	usage.RegisterPlugin(usageSink)
+	return service, nil
 }
 
 // Store returns the active tenancy persistence surface.
@@ -100,6 +120,15 @@ func (s *Service) Check(userID string) (bool, time.Duration) {
 	return s.quota.Check(userID)
 }
 
+// TriggerBalancing requests an immediate reset-window priority recomputation.
+// Concurrent triggers are coalesced; the periodic ticker remains the fallback.
+func (s *Service) TriggerBalancing() {
+	if s == nil || s.balancing == nil {
+		return
+	}
+	s.balancing.trigger()
+}
+
 // Close flushes usage before closing the tenancy store.
 func (s *Service) Close() error {
 	if s == nil {
@@ -107,6 +136,9 @@ func (s *Service) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		var closeErrors []error
+		if s.balancing != nil {
+			s.balancing.stopAndUninstall()
+		}
 		usagePlugin := s.usagePlugin
 		if s.usageSink != nil {
 			usagePlugin = s.usageSink.detach()
