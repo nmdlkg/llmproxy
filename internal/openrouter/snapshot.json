@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-07-26T00:00:00Z",
+  "models": {
+    "data": [
+      {
+        "id": "openai/gpt-4o",
+        "context_length": 128000,
+        "supported_parameters": ["tools", "response_format", "structured_outputs"],
+        "pricing": {
+          "prompt": "0.0000025",
+          "completion": "0.00001",
+          "request": "0",
+          "image": "0.003613",
+          "web_search": "0",
+          "internal_reasoning": "0",
+          "input_cache_read": "0.00000125",
+          "input_cache_write": "0"
+        }
+      },
+      {
+        "id": "anthropic/claude-3.5-sonnet",
+        "context_length": 200000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "pricing": {
+          "prompt": "0.000003",
+          "completion": "0.000015",
+          "request": "0",
+          "image": "0.0048",
+          "internal_reasoning": "0",
+          "input_cache_read": "0.0000003",
+          "input_cache_write": "0.00000375"
+        }
+      },
+      {
+        "id": "google/gemini-2.5-flash",
+        "context_length": 1048576,
+        "supported_parameters": ["tools", "structured_outputs"],
+        "pricing": {
+          "prompt": "0.0000003",
+          "completion": "0.0000025",
+          "request": "0",
+          "image": "0.001238",
+          "internal_reasoning": "0.0000025",
+          "input_cache_read": "0.00000003"
+        }
+      }
+    ]
+  },
+  "benchmarks": {
+    "artificial-analysis": {
+      "data": [
+        {
+          "model_permaslug": "openai/gpt-4o",
+          "display_name": "GPT-4o",
+          "intelligence_index": 48.2,
+          "coding_index": 46.1,
+          "agentic_index": null,
+          "pricing": {
+            "prompt": "0.0000025",
+            "completion": "0.00001"
+          }
+        },
+        {
+          "model_permaslug": "anthropic/claude-3.5-sonnet",
+          "display_name": "Claude 3.5 Sonnet",
+          "intelligence_index": 50.4,
+          "coding_index": 52.3,
+          "agentic_index": 44.8,
+          "pricing": {
+            "prompt": "0.000003",
+            "completion": "0.000015"
+          }
+        },
+        {
+          "model_permaslug": "google/gemini-2.5-flash",
+          "display_name": "Gemini 2.5 Flash",
+          "intelligence_index": 43.5,
+          "coding_index": 41.9,
+          "agentic_index": 39.1,
+          "pricing": {
+            "prompt": "0.0000003",
+            "completion": "0.0000025"
+          }
+        }
+      ]
+    },
+    "design-arena": {
+      "data": [
+        {
+          "model_permaslug": "openai/gpt-4o",
+          "display_name": "GPT-4o",
+          "elo": 1178.4,
+          "win_rate": 0.53,
+          "avg_generation_time_ms": 6200,
+          "tournament_stats": {},
+          "arena": "models",
+          "category": "general"
+        },
+        {
+          "model_permaslug": "anthropic/claude-3.5-sonnet",
+          "display_name": "Claude 3.5 Sonnet",
+          "elo": 1202.7,
+          "win_rate": 0.57,
+          "avg_generation_time_ms": 7100,
+          "tournament_stats": {},
+          "arena": "models",
+          "category": "general"
+        }
+      ]
+    }
+  }
+}
