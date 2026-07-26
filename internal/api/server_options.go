@@ -46,6 +46,9 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 	if cfg == nil {
 		return nil
 	}
+	// UpdateClientsContext calls this conversion on reload. The notice is armed
+	// only after NewServer's startup conversion has completed.
+	noteOTelConfigReload()
 	sdkCfg := cfg.SDKConfig
 	sdkCfg.CodexOptimizeMultiAgentV2 = cfg.Codex.OptimizeMultiAgentV2
 	if cfg.CommercialMode {
@@ -144,10 +147,16 @@ func WithTenancyService() ServerOption {
 	}
 }
 
-// WithOTelUsageFromEnvironment enables optional OTLP/HTTP usage metrics
-// bootstrap from the LLMPROXY_OTEL_* environment variables.
-func WithOTelUsageFromEnvironment() ServerOption {
+// WithOTelUsage enables startup-only OTLP/HTTP usage metrics bootstrap from
+// Config.OTel, with deprecated LLMPROXY_OTEL_* fallback when the section is absent.
+func WithOTelUsage() ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.otelUsageEnabled = true
 	}
+}
+
+// WithOTelUsageFromEnvironment is retained for callers migrating to WithOTelUsage.
+// Deprecated: use WithOTelUsage.
+func WithOTelUsageFromEnvironment() ServerOption {
+	return WithOTelUsage()
 }
