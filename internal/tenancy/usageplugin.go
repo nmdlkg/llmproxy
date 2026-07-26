@@ -195,7 +195,10 @@ func ModelPricingFor(model string, cfg config.TenancyConfig) openrouter.ModelPri
 	applyModelPriceOverride(&pricing, cfg.Quota.ModelPriceOverrides["*"], false)
 	applyModelPriceOverride(&pricing, cfg.Quota.ModelPriceOverrides[model], true)
 
-	if strings.EqualFold(strings.TrimSpace(cfg.Pricing.CostBasis), "openrouter") {
+	// openrouter.enabled is the master switch: when it is false the catalog is
+	// documented as fully inert, so cost-basis: openrouter degrades to
+	// overrides-only rather than silently pricing from the embedded snapshot.
+	if cfg.Pricing.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Pricing.CostBasis), "openrouter") {
 		catalogPricing, _, ok := openrouter.CurrentSnapshot().PricingForLocalModel(
 			model,
 			cfg.Pricing.ModelMap,

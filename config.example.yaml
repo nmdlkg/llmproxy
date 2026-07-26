@@ -134,8 +134,12 @@ redis-usage-queue-retention-seconds: 60
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
-# OpenRouter pricing and benchmark catalogs. Disabled means no goroutine, no
-# network access, and no change to static quota/routing behavior.
+# OpenRouter pricing and benchmark catalogs.
+#
+# `enabled` is the master switch. While it is false there is no goroutine, no
+# network access, and no change to quota or routing behaviour: cost-basis and
+# benchmark-source below have no effect, so quota falls back to
+# model-price-overrides and auto-routing keeps the configured tier order.
 openrouter:
   enabled: false
   # Required only for benchmarks. When empty, OPENROUTER_API_KEY is used.
