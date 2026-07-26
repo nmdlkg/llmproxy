@@ -34,6 +34,8 @@ type UsagePlugin struct {
 	flushInterval time.Duration
 	now           func() time.Time
 
+	quotaWindowUpdated func()
+
 	mu                  sync.Mutex
 	pending             []UsageEntry
 	unpricedModels      map[string]struct{}
@@ -424,6 +426,10 @@ func (p *UsagePlugin) captureQuotaWindow(record usage.Record, occurredAt time.Ti
 		log.WithError(errUpsert).
 			WithField("auth_id", record.AuthID).
 			Error("tenancy usage: upsert quota window")
+		return
+	}
+	if p.quotaWindowUpdated != nil {
+		p.quotaWindowUpdated()
 	}
 }
 

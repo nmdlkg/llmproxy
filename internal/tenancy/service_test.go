@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,10 +15,19 @@ import (
 
 func TestNewServiceDisabledIsNoOp(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "state", "tenancy.db")
+	manager := coreauth.NewManager(nil, nil, nil)
+	var resolverCalls atomic.Int32
+	manager.SetPriorityResolver(func(*coreauth.Auth) (int, bool) {
+		resolverCalls.Add(1)
+		return 0, false
+	})
+	t.Cleanup(func() {
+		manager.SetPriorityResolver(nil)
+	})
 	service, errNew := NewService(config.TenancyConfig{
 		Enabled: false,
 		DBPath:  databasePath,
-	}, t.TempDir(), coreauth.NewManager(nil, nil, nil))
+	}, t.TempDir(), manager)
 	if errNew != nil {
 		t.Fatalf("NewService() error = %v", errNew)
 	}
@@ -26,6 +36,10 @@ func TestNewServiceDisabledIsNoOp(t *testing.T) {
 	}
 	if _, errStat := os.Stat(databasePath); !os.IsNotExist(errStat) {
 		t.Fatalf("database path stat error = %v, want not-exist", errStat)
+	}
+	registerTestAuth(t, manager, "disabled-service-auth", "1")
+	if resolverCalls.Load() == 0 {
+		t.Fatal("disabled NewService replaced the manager's existing priority resolver")
 	}
 }
 
