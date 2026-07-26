@@ -107,6 +107,7 @@ type Manager struct {
 	pendingCooldownStateStore CooldownStateStore
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
+	priorityResolver          PriorityResolver
 	hook                      Hook
 	mu                        sync.RWMutex
 	configCooldownMu          sync.Mutex
