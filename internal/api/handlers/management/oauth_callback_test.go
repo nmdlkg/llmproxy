@@ -50,6 +50,31 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	}
 }
 
+func TestManagementOAuthCallbackRejectsUserBoundSession(t *testing.T) {
+	authDir := t.TempDir()
+	state := "user-bound-state"
+	RegisterOAuthSessionForUser(state, "codex", "user-a")
+	defer CompleteOAuthSession(state)
+
+	handler := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.POST("/v0/management/oauth-callback", handler.PostOAuthCallback)
+	body := `{"provider":"codex","state":"user-bound-state","code":"test-code"}`
+	request := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	callbackPath := filepath.Join(authDir, ".oauth-codex-"+state+".oauth")
+	if _, errStat := os.Stat(callbackPath); !os.IsNotExist(errStat) {
+		t.Fatalf("management callback wrote a user-bound session file: %v", errStat)
+	}
+}
+
 func TestGetOAuthCallbackWritesPluginProviderCallback(t *testing.T) {
 	authDir := filepath.Join(t.TempDir(), "missing-auth")
 	state := "test-geminicli-state"

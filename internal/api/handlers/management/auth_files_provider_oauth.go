@@ -21,6 +21,7 @@ import (
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -66,7 +67,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "anthropic")
+	registerOAuthSessionForRequest(c, state, "anthropic")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -213,7 +214,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "codex")
+	registerOAuthSessionForRequest(c, state, "codex")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -346,7 +347,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
 
-	RegisterOAuthSession(state, "antigravity")
+	registerOAuthSessionForRequest(c, state, "antigravity")
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -515,7 +516,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		authURL = strings.TrimSpace(deviceFlow.VerificationURI)
 	}
 
-	RegisterOAuthSession(state, "xai")
+	registerOAuthSessionForRequest(c, state, "xai")
 
 	go func() {
 		pollCtx, cancelPoll := context.WithCancel(ctx)
@@ -630,7 +631,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		authURL = deviceFlow.VerificationURI
 	}
 
-	RegisterOAuthSession(state, "kimi")
+	registerOAuthSessionForRequest(c, state, "kimi")
 
 	go func() {
 		pollCtx, cancelPoll := context.WithCancel(ctx)
@@ -867,9 +868,20 @@ func (h *Handler) rollbackSavedTokenRecords(ctx context.Context, savedPaths []st
 
 // PopulateAuthContext extracts request info and adds it to the context
 func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
+	if user, ok := tenancy.UserFromGin(c); ok {
+		ctx = tenancy.WithUser(ctx, user)
+	}
 	info := &coreauth.RequestInfo{
 		Query:   c.Request.URL.Query(),
 		Headers: c.Request.Header,
 	}
 	return coreauth.WithRequestInfo(ctx, info)
+}
+
+func registerOAuthSessionForRequest(c *gin.Context, state, provider string) {
+	userID := ""
+	if user, ok := tenancy.UserFromGin(c); ok {
+		userID = user.ID
+	}
+	RegisterOAuthSessionForUser(state, provider, userID)
 }

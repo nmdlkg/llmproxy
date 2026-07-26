@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -94,6 +95,14 @@ func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) 
 	if completed {
 		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "oauth flow is already completed"})
 		return
+	}
+	session, _ := oauthSessions.Get(state)
+	if sessionUserID := strings.TrimSpace(session.UserID); sessionUserID != "" {
+		user, authenticated := tenancy.UserFromGin(c)
+		if !authenticated || strings.TrimSpace(user.ID) != sessionUserID {
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
+			return
+		}
 	}
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
