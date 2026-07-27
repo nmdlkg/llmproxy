@@ -26,9 +26,10 @@ type UserResolver func(ctx context.Context, record usage.Record) (*User, error)
 
 // UsagePlugin durably batches usage records and tracks provider quota windows.
 type UsagePlugin struct {
-	store    Store
-	cfg      config.TenancyConfig
-	resolver UserResolver
+	store     Store
+	cfg       config.TenancyConfig
+	resolver  UserResolver
+	validator *credentialValidator
 
 	batchSize     int
 	flushInterval time.Duration
@@ -124,6 +125,19 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 		}
 	}
 
+	if p.validator != nil {
+		if errRecord := p.validator.recordOutcome(
+			user.ID,
+			record.AuthID,
+			record.Failed,
+			record.Fail.StatusCode,
+			occurredAt,
+		); errRecord != nil {
+			log.WithError(errRecord).
+				WithField("auth_id", record.AuthID).
+				Warn("tenancy usage: record credential validation outcome")
+		}
+	}
 	p.captureQuotaWindow(record, occurredAt)
 }
 

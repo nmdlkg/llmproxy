@@ -362,7 +362,11 @@ func (s *SQLiteStore) UpsertCredentialValidation(ctx context.Context, validation
 		ON CONFLICT(auth_id) DO UPDATE SET
 			user_id = excluded.user_id,
 			last_attempt_at = excluded.last_attempt_at,
-			last_ok_at = excluded.last_ok_at,
+			last_ok_at = CASE
+				WHEN excluded.last_ok_at IS NOT NULL THEN excluded.last_ok_at
+				WHEN credential_validation.user_id = excluded.user_id THEN credential_validation.last_ok_at
+				ELSE NULL
+			END,
 			last_status = excluded.last_status
 	`,
 		validation.AuthID,
