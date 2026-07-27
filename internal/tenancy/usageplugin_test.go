@@ -254,6 +254,87 @@ func TestUsagePluginLedgerAndConfiguredWindowFallback(t *testing.T) {
 	}
 }
 
+func TestUsagePluginRecordsCredentialValidationOutcomes(t *testing.T) {
+	store := newTestStore(t)
+	user := &User{ID: "user-1", Email: "person@example.com", Role: RoleUser, Tier: "default"}
+	validator := newCredentialValidator(store, func(string) ([]Credential, error) {
+		return []Credential{{AuthID: "auth-1", Provider: "codex"}}, nil
+	})
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	validator.now = func() time.Time { return now }
+	if _, errPreferred := validator.preferredAuthIDs(user.ID, time.Hour); errPreferred != nil {
+		t.Fatalf("preferredAuthIDs() error = %v", errPreferred)
+	}
+
+	plugin := NewUsagePlugin(
+		store,
+		config.TenancyConfig{},
+		func(context.Context, usage.Record) (*User, error) {
+			return user, nil
+		},
+	)
+	plugin.validator = validator
+	t.Cleanup(func() {
+		if errClose := plugin.Close(); errClose != nil {
+			t.Errorf("UsagePlugin.Close() error = %v", errClose)
+		}
+	})
+
+	plugin.HandleUsage(context.Background(), usage.Record{
+		AuthID:      "auth-1",
+		Provider:    "codex",
+		Failed:      true,
+		Fail:        usage.Failure{StatusCode: http.StatusUnauthorized},
+		RequestedAt: now,
+	})
+	failed, errGet := store.GetCredentialValidation(context.Background(), "auth-1")
+	if errGet != nil {
+		t.Fatalf("GetCredentialValidation(failure) error = %v", errGet)
+	}
+	if failed.LastOKAt != nil {
+		t.Fatalf("failed outcome LastOKAt = %v, want nil", failed.LastOKAt)
+	}
+	if failed.LastStatus != "401" {
+		t.Fatalf("failed outcome LastStatus = %q, want %q", failed.LastStatus, "401")
+	}
+
+	successAt := now.Add(time.Minute)
+	plugin.HandleUsage(context.Background(), usage.Record{
+		AuthID:      "auth-1",
+		Provider:    "codex",
+		RequestedAt: successAt,
+	})
+	succeeded, errGet := store.GetCredentialValidation(context.Background(), "auth-1")
+	if errGet != nil {
+		t.Fatalf("GetCredentialValidation(success) error = %v", errGet)
+	}
+	if succeeded.LastOKAt == nil || !succeeded.LastOKAt.Equal(successAt) {
+		t.Fatalf("successful outcome LastOKAt = %v, want %v", succeeded.LastOKAt, successAt)
+	}
+	if succeeded.LastStatus != "ok" {
+		t.Fatalf("successful outcome LastStatus = %q, want %q", succeeded.LastStatus, "ok")
+	}
+
+	laterFailureAt := successAt.Add(time.Minute)
+	plugin.HandleUsage(context.Background(), usage.Record{
+		AuthID:      "auth-1",
+		Provider:    "codex",
+		Failed:      true,
+		Fail:        usage.Failure{StatusCode: http.StatusForbidden},
+		RequestedAt: laterFailureAt,
+	})
+	laterFailure, errGet := store.GetCredentialValidation(context.Background(), "auth-1")
+	if errGet != nil {
+		t.Fatalf("GetCredentialValidation(later failure) error = %v", errGet)
+	}
+	if laterFailure.LastOKAt == nil || !laterFailure.LastOKAt.Equal(successAt) {
+		t.Fatalf("later failed outcome LastOKAt = %v, want preserved %v", laterFailure.LastOKAt, successAt)
+	}
+	if laterFailure.LastStatus != "403" {
+		t.Fatalf("later failed outcome LastStatus = %q, want %q", laterFailure.LastStatus, "403")
+	}
+}
+
 // TestModelPricingForRespectsOpenRouterMasterSwitch pins the master-switch
 // contract: openrouter.enabled=false is documented as leaving quota behaviour
 // unchanged, so cost-basis: openrouter must degrade to overrides-only instead

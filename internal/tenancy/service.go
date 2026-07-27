@@ -32,6 +32,7 @@ type Service struct {
 	usagePlugin *UsagePlugin
 	usageSink   *serviceUsageSink
 	balancing   *balancingRuntime
+	validation  *credentialValidator
 
 	closeOnce sync.Once
 	closeErr  error
@@ -50,7 +51,8 @@ func NewService(cfg config.TenancyConfig, authDir string, authManager *coreauth.
 		return nil, fmt.Errorf("tenancy service: open store: %w", errOpen)
 	}
 
-	quota, errQuota := NewQuota(store, cfg.Quota, credentialResolver(authManager))
+	credentials := credentialResolver(authManager)
+	quota, errQuota := NewQuota(store, cfg.Quota, credentials)
 	if errQuota != nil {
 		if errClose := store.Close(); errClose != nil {
 			return nil, errors.Join(
@@ -76,13 +78,16 @@ func NewService(cfg config.TenancyConfig, authDir string, authManager *coreauth.
 		}
 	}
 
+	validation := newCredentialValidator(store, credentials)
 	usagePlugin := NewUsagePlugin(store, cfg, withContextUser(ResolveAPIKeyUser(store)))
+	usagePlugin.validator = validation
 	usageSink := &serviceUsageSink{plugin: usagePlugin}
 	service := &Service{
 		store:       store,
 		quota:       quota,
 		usagePlugin: usagePlugin,
 		usageSink:   usageSink,
+		validation:  validation,
 	}
 	if authManager != nil {
 		// The scheduler calls the installed resolver while holding its mutex.
@@ -118,6 +123,14 @@ func (s *Service) Check(userID string) (bool, time.Duration) {
 		return false, quotaStoreErrorRetryAfter
 	}
 	return s.quota.Check(userID)
+}
+
+// PreferredAuthIDs returns the user's next due credential as a soft preference.
+func (s *Service) PreferredAuthIDs(userID string, interval time.Duration) ([]string, error) {
+	if s == nil || s.validation == nil {
+		return nil, nil
+	}
+	return s.validation.preferredAuthIDs(userID, interval)
 }
 
 // TriggerBalancing requests an immediate reset-window priority recomputation.

@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -182,6 +183,58 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 
 type userQuotaChecker interface {
 	Check(userID string) (allowed bool, retryAfter time.Duration)
+}
+
+type credentialValidationChecker interface {
+	PreferredAuthIDs(userID string, interval time.Duration) ([]string, error)
+}
+
+func (s *Server) credentialValidationMiddleware() gin.HandlerFunc {
+	return CredentialValidationMiddleware(func() *config.Config {
+		if s == nil {
+			return nil
+		}
+		return s.cfg
+	}, s.tenancyService)
+}
+
+// CredentialValidationMiddleware softly prefers one due user-owned credential.
+// Missing users, disabled configuration, and bookkeeping failures always pass through.
+func CredentialValidationMiddleware(configProvider func() *config.Config, validator credentialValidationChecker) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var cfg *config.Config
+		if configProvider != nil {
+			cfg = configProvider()
+		}
+		if cfg == nil || !cfg.Tenancy.Enabled || validator == nil {
+			c.Next()
+			return
+		}
+		interval, enabled := tenancy.ParseValidationInterval(cfg.Tenancy.ValidationInterval)
+		if !enabled {
+			c.Next()
+			return
+		}
+		user, ok := tenancy.UserFromGin(c)
+		if !ok {
+			c.Next()
+			return
+		}
+
+		preferred, errPreferred := validator.PreferredAuthIDs(user.ID, interval)
+		if errPreferred != nil {
+			log.WithError(errPreferred).
+				WithField("user_id", user.ID).
+				Warn("tenancy validation: preferred credential lookup failed")
+			c.Next()
+			return
+		}
+		if len(preferred) > 0 && c.Request != nil {
+			ctx := sdkhandlers.WithPreferredAuthIDs(c.Request.Context(), preferred)
+			c.Request = c.Request.WithContext(ctx)
+		}
+		c.Next()
+	}
 }
 
 func (s *Server) userQuotaMiddleware() gin.HandlerFunc {

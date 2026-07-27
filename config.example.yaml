@@ -216,11 +216,15 @@ tenancy:
   enabled: false
   # Empty defaults to <auth-dir>/../tenancy.db
   db-path: ""
-  # NOT YET IMPLEMENTED. Intended to control how often a user's own credential
-  # is preferred for their request so their OAuth token gets validated by real
-  # traffic instead of a synthetic probe. The credential-selection seam exists
-  # (PreferredAuthIDsMetadataKey) but nothing sets it yet, so this value is
-  # currently read by nothing and changing it has no effect.
+  # How often a user's own credential is softly preferred for their request, so
+  # their OAuth token gets validated by real traffic instead of a synthetic
+  # probe (this proxy has no credential health prober).
+  #
+  # The preference is soft: if that credential is cooling down, disabled, or
+  # does not serve the requested model, selection falls back to the shared pool
+  # and the request never fails because of this. Only a SUCCESSFUL request
+  # advances the interval, and a user with several credentials has them
+  # validated in rotation. Set to 0 to disable.
   validation-interval: "1h"
   quota:
     # false = observe-only: usage is still attributed and recorded, but no
