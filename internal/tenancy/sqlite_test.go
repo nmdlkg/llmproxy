@@ -329,3 +329,56 @@ func TestResolveDBPathExpandsTilde(t *testing.T) {
 		})
 	}
 }
+
+// TestUserEmailIsCaseNormalized pins the fix for a cross-surface inconsistency:
+// the CLI bootstrap matched emails case-insensitively while the HTTP admin API
+// inserted them verbatim, and the SQLite UNIQUE constraint is case-sensitive. Two
+// accounts for one person split their ledger and quota and split the user_email
+// series every dashboard groups by.
+func TestUserEmailIsCaseNormalized(t *testing.T) {
+	store := newTestStore(t)
+
+	if errCreate := store.CreateUser(&User{
+		ID: "u1", Email: "  Admin@Example.COM  ", Role: RoleAdmin, Tier: "default",
+	}); errCreate != nil {
+		t.Fatalf("CreateUser() error = %v", errCreate)
+	}
+
+	stored, errGet := store.GetUser("u1")
+	if errGet != nil {
+		t.Fatalf("GetUser() error = %v", errGet)
+	}
+	if stored.Email != "admin@example.com" {
+		t.Fatalf("stored email = %q, want %q", stored.Email, "admin@example.com")
+	}
+
+	// A different casing of the same address must now collide instead of creating
+	// a second account.
+	if errDup := store.CreateUser(&User{
+		ID: "u2", Email: "admin@EXAMPLE.com", Role: RoleUser, Tier: "default",
+	}); errDup == nil {
+		users, _ := store.ListUsers()
+		t.Fatalf("CreateUser() accepted a case-duplicate email; users now = %d", len(users))
+	}
+
+	users, errList := store.ListUsers()
+	if errList != nil {
+		t.Fatalf("ListUsers() error = %v", errList)
+	}
+	if len(users) != 1 {
+		t.Fatalf("user count = %d, want 1", len(users))
+	}
+
+	// UpdateUser must normalize too, or an update could reintroduce a duplicate.
+	stored.Email = "  Admin@Example.com "
+	if errUpdate := store.UpdateUser(stored); errUpdate != nil {
+		t.Fatalf("UpdateUser() error = %v", errUpdate)
+	}
+	updated, errGetUpdated := store.GetUser("u1")
+	if errGetUpdated != nil {
+		t.Fatalf("GetUser() after update error = %v", errGetUpdated)
+	}
+	if updated.Email != "admin@example.com" {
+		t.Fatalf("email after update = %q, want %q", updated.Email, "admin@example.com")
+	}
+}

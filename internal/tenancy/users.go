@@ -18,6 +18,19 @@ func HashAPIKey(plaintext string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// normalizeEmail canonicalizes a user email to trimmed lower case.
+//
+// The users.email UNIQUE constraint is case-sensitive in SQLite, so without this
+// two rows differing only in case can coexist. That matters beyond tidiness:
+// the email is the ledger and quota key and the join key every dashboard and the
+// monthly usage report group by, so a case-duplicate silently splits one person's
+// usage across two accounts and grants them quota twice. Normalizing here rather
+// than in each caller keeps the CLI bootstrap and the HTTP admin API in
+// agreement, since only this layer is common to both.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 // CreateUser inserts a user, generating an ID when one is not supplied.
 func (s *SQLiteStore) CreateUser(user *User) error {
 	if user == nil {
@@ -34,7 +47,7 @@ func (s *SQLiteStore) CreateUser(user *User) error {
 		}
 		user.ID = id
 	}
-	user.Email = strings.TrimSpace(user.Email)
+	user.Email = normalizeEmail(user.Email)
 	if user.Email == "" {
 		return fmt.Errorf("tenancy sqlite: user email is empty")
 	}
@@ -90,7 +103,7 @@ func (s *SQLiteStore) UpdateUser(user *User) error {
 	if errRole != nil {
 		return errRole
 	}
-	user.Email = strings.TrimSpace(user.Email)
+	user.Email = normalizeEmail(user.Email)
 	if user.Email == "" {
 		return fmt.Errorf("tenancy sqlite: user email is empty")
 	}
