@@ -93,6 +93,8 @@ func main() {
 	var localModel bool
 	var remote string
 	var userKey string
+	var createAdminUser string
+	var createAdminUserTier string
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
@@ -114,6 +116,8 @@ func main() {
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
 	flag.StringVar(&remote, "remote", "", "Store a login credential on a remote CLIProxyAPI server")
 	flag.StringVar(&userKey, "user-key", "", "User API key for --remote credential storage")
+	flag.StringVar(&createAdminUser, "create-admin-user", "", "Create or recover a tenancy admin user by email")
+	flag.StringVar(&createAdminUserTier, "create-admin-user-tier", "default", "Tier for a newly created admin user")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -604,7 +608,7 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	commandMode := createAdminUser != "" || vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -663,7 +667,12 @@ func main() {
 
 	// Handle different command modes based on the provided flags.
 
-	if vertexImport != "" {
+	if createAdminUser != "" {
+		if errCreateAdmin := cmd.DoCreateAdminUser(cfg, createAdminUser, createAdminUserTier, os.Stdout); errCreateAdmin != nil {
+			log.Errorf("create-admin-user failed: %v", errCreateAdmin)
+			os.Exit(1)
+		}
+	} else if vertexImport != "" {
 		// Handle Vertex service account import
 		cmd.DoVertexImport(cfg, vertexImport, vertexImportPrefix)
 	} else if antigravityLogin {
