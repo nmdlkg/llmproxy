@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	log "github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
 
@@ -23,11 +25,47 @@ type SQLiteStore struct {
 var _ Store = (*SQLiteStore)(nil)
 
 // ResolveDBPath applies the tenancy database path contract.
+//
+// Both inputs may start with "~": auth-dir conventionally does (the shipped
+// default is "~/.cli-proxy-api") and callers pass cfg.AuthDir unexpanded, so the
+// tilde must be resolved here. Leaving it literal would create a directory
+// actually named "~" under the process working directory, putting the database
+// somewhere other than documented and, worse, making it depend on the working
+// directory: a restart from elsewhere would silently open a different database
+// and appear to lose every user and usage row.
 func ResolveDBPath(cfg config.TenancyConfig, authDir string) string {
 	if path := strings.TrimSpace(cfg.DBPath); path != "" {
-		return filepath.Clean(path)
+		return filepath.Clean(expandHomePath(path))
 	}
-	return filepath.Clean(filepath.Join(authDir, "..", "tenancy.db"))
+	// ResolveAuthDir owns the auth-dir contract, including the tilde form and the
+	// empty-means-default case.
+	resolved, errResolve := util.ResolveAuthDir(authDir)
+	if errResolve != nil {
+		log.WithError(errResolve).
+			WithField("auth_dir", authDir).
+			Warn("tenancy sqlite: cannot resolve auth dir; deriving database path from the raw value")
+		resolved = authDir
+	}
+	return filepath.Clean(filepath.Join(resolved, "..", "tenancy.db"))
+}
+
+// expandHomePath resolves a leading "~" in an explicitly configured path. Unlike
+// util.ResolveAuthDir it applies no default, because an empty database path is a
+// caller error rather than a request for the default auth directory.
+func expandHomePath(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, errHome := os.UserHomeDir()
+	if errHome != nil {
+		log.WithError(errHome).Warn("tenancy sqlite: cannot resolve home directory; using the configured path verbatim")
+		return path
+	}
+	remainder := strings.TrimLeft(strings.TrimPrefix(path, "~"), "/\\")
+	if remainder == "" {
+		return home
+	}
+	return filepath.Join(home, filepath.FromSlash(strings.ReplaceAll(remainder, "\\", "/")))
 }
 
 // OpenSQLite opens the configured tenancy database and creates its schema.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -272,4 +274,58 @@ func newTestStore(t *testing.T) *SQLiteStore {
 		}
 	})
 	return store
+}
+
+// TestResolveDBPathExpandsTilde pins the path contract. A literal "~" would put
+// the database under a directory named "~" relative to the process working
+// directory, so the same config would open different databases depending on
+// where the server was started from -- silently losing every user and usage row.
+func TestResolveDBPathExpandsTilde(t *testing.T) {
+	home, errHome := os.UserHomeDir()
+	if errHome != nil {
+		t.Skipf("no home directory available: %v", errHome)
+	}
+
+	tests := []struct {
+		name    string
+		cfg     config.TenancyConfig
+		authDir string
+		want    string
+	}{
+		{
+			name:    "tilde auth dir with empty db path (the live deployment shape)",
+			authDir: "~/.local/share/cliproxyapi/auths",
+			want:    filepath.Join(home, ".local/share/cliproxyapi/tenancy.db"),
+		},
+		{
+			name: "tilde db path",
+			cfg:  config.TenancyConfig{DBPath: "~/cliproxy/tenancy.db"},
+			want: filepath.Join(home, "cliproxy/tenancy.db"),
+		},
+		{
+			name: "absolute db path is untouched",
+			cfg:  config.TenancyConfig{DBPath: "/var/lib/cliproxy/tenancy.db"},
+			want: "/var/lib/cliproxy/tenancy.db",
+		},
+		{
+			name:    "absolute auth dir is untouched",
+			authDir: "/var/lib/cliproxy/auths",
+			want:    "/var/lib/cliproxy/tenancy.db",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ResolveDBPath(test.cfg, test.authDir)
+			if got != test.want {
+				t.Fatalf("ResolveDBPath() = %q, want %q", got, test.want)
+			}
+			if strings.Contains(got, "~") {
+				t.Fatalf("ResolveDBPath() = %q still contains a literal tilde", got)
+			}
+			if !filepath.IsAbs(got) {
+				t.Fatalf("ResolveDBPath() = %q is not absolute; the path would depend on the working directory", got)
+			}
+		})
+	}
 }
