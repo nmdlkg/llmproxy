@@ -1,23 +1,30 @@
 package tenancy
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// Codex reports ratios rather than token counts, so preserve two decimal
+// places as basis-point units for the downstream used/limit calculation.
+const codexPercentScale int64 = 10000
+
 // RateLimitHeaders is the normalized quota-window information extracted from
 // provider response headers.
 type RateLimitHeaders struct {
-	Remaining int64
-	Limit     int64
-	ResetAt   time.Time
-	Source    string
+	Remaining      int64
+	Limit          int64
+	ResetAt        time.Time
+	WindowDuration time.Duration
+	Source         string
 }
 
-// ParseRateLimitHeaders parses known Anthropic, OpenAI, and generic rate-limit
-// response headers. It returns ok=false when no trustworthy value is present.
+// ParseRateLimitHeaders parses known Anthropic, OpenAI, Codex, and generic
+// rate-limit response headers. It returns ok=false when no trustworthy value
+// is present.
 func ParseRateLimitHeaders(headers http.Header, now time.Time) (result RateLimitHeaders, ok bool) {
 	if len(headers) == 0 {
 		return RateLimitHeaders{}, false
@@ -62,6 +69,10 @@ func ParseRateLimitHeaders(headers http.Header, now time.Time) (result RateLimit
 		return applyRetryAfterReset(result, headers, now), true
 	}
 
+	if result, ok = parseCodexRateLimitHeaders(headers, now); ok {
+		return result, true
+	}
+
 	retryAfter := strings.TrimSpace(headerValue(headers, "retry-after"))
 	if retryAfter == "" {
 		return RateLimitHeaders{}, false
@@ -74,6 +85,87 @@ func ParseRateLimitHeaders(headers http.Header, now time.Time) (result RateLimit
 		ResetAt: resetAt,
 		Source:  "retry-after",
 	}, true
+}
+
+func parseCodexRateLimitHeaders(headers http.Header, now time.Time) (RateLimitHeaders, bool) {
+	primary, primaryOK := parseCodexRateLimitWindow(headers, "primary", now)
+	secondary, secondaryOK := parseCodexRateLimitWindow(headers, "secondary", now)
+	switch {
+	case primaryOK && secondaryOK:
+		// Capacity in the shorter window expires sooner, so it is the more
+		// actionable window for reset-aware balancing. Primary wins ties.
+		if secondary.WindowDuration < primary.WindowDuration {
+			return secondary, true
+		}
+		return primary, true
+	case primaryOK:
+		return primary, true
+	case secondaryOK:
+		return secondary, true
+	default:
+		return RateLimitHeaders{}, false
+	}
+}
+
+func parseCodexRateLimitWindow(headers http.Header, windowName string, now time.Time) (RateLimitHeaders, bool) {
+	prefix := "x-codex-" + windowName + "-"
+	remaining, limit, validPercent := parseCodexUsedPercent(headerValue(headers, prefix+"used-percent"))
+	windowDuration, validWindow := parsePositiveMinutes(headerValue(headers, prefix+"window-minutes"))
+
+	var resetAt time.Time
+	validReset := false
+	absoluteReset := strings.TrimSpace(headerValue(headers, prefix+"reset-at"))
+	if absoluteReset != "" {
+		resetAt, validReset = parseAbsoluteReset(absoluteReset)
+	}
+	if !validReset {
+		resetAt, validReset = parseNonNegativeSecondsReset(
+			headerValue(headers, prefix+"reset-after-seconds"),
+			now,
+		)
+	}
+	if !validPercent || !validWindow || !validReset {
+		return RateLimitHeaders{}, false
+	}
+
+	return RateLimitHeaders{
+		Remaining:      remaining,
+		Limit:          limit,
+		ResetAt:        resetAt,
+		WindowDuration: windowDuration,
+		Source:         "codex-" + windowName,
+	}, true
+}
+
+func parseCodexUsedPercent(value string) (remaining int64, limit int64, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, 0, false
+	}
+	percent, errParse := strconv.ParseFloat(value, 64)
+	if errParse != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {
+		return 0, 0, false
+	}
+	used := int64(math.Round(percent * float64(codexPercentScale) / 100))
+	return codexPercentScale - used, codexPercentScale, true
+}
+
+func parsePositiveMinutes(value string) (time.Duration, bool) {
+	minutes, valid := parseNonNegativeInt(value)
+	maxDuration := time.Duration(1<<63 - 1)
+	if !valid || minutes == 0 || minutes > int64(maxDuration/time.Minute) {
+		return 0, false
+	}
+	return time.Duration(minutes) * time.Minute, true
+}
+
+func parseNonNegativeSecondsReset(value string, now time.Time) (time.Time, bool) {
+	seconds, valid := parseNonNegativeInt(value)
+	maxDuration := time.Duration(1<<63 - 1)
+	if !valid || seconds > int64(maxDuration/time.Second) {
+		return time.Time{}, false
+	}
+	return now.Add(time.Duration(seconds) * time.Second), true
 }
 
 func applyRetryAfterReset(result RateLimitHeaders, headers http.Header, now time.Time) RateLimitHeaders {

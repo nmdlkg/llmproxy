@@ -388,39 +388,54 @@ func (p *UsagePlugin) captureQuotaWindow(record usage.Record, occurredAt time.Ti
 
 	provider := strings.ToLower(strings.TrimSpace(record.Provider))
 	now := p.now().UTC()
-	providerWindow, hasProviderWindow := p.providerWindow(provider)
 	windowEnd := parsed.ResetAt
-	searchSince := now
-	if hasProviderWindow {
-		if !windowEnd.IsZero() {
-			searchSince = windowEnd.Add(-providerWindow)
-		} else {
-			searchSince = now.Add(-providerWindow)
+	windowDuration := parsed.WindowDuration
+	hasHeaderWindow := windowDuration > 0
+	hasWindowDuration := hasHeaderWindow
+	if !hasWindowDuration {
+		windowDuration, hasWindowDuration = p.providerWindow(provider)
+	}
+
+	var windowStart time.Time
+	if hasHeaderWindow && !windowEnd.IsZero() {
+		windowStart = windowEnd.Add(-windowDuration)
+	} else {
+		searchSince := now
+		if hasWindowDuration {
+			if !windowEnd.IsZero() {
+				searchSince = windowEnd.Add(-windowDuration)
+			} else {
+				searchSince = now.Add(-windowDuration)
+			}
 		}
-	}
-	windowStart, found, errEarliest := p.store.EarliestAuthUsage(
-		context.Background(),
-		record.AuthID,
-		provider,
-		searchSince,
-	)
-	if errEarliest != nil {
-		log.WithError(errEarliest).
-			WithField("auth_id", record.AuthID).
-			Error("tenancy usage: infer quota window start")
-		return
-	}
-	if !found || occurredAt.Before(windowStart) {
-		windowStart = occurredAt
+		found := false
+		var errEarliest error
+		windowStart, found, errEarliest = p.store.EarliestAuthUsage(
+			context.Background(),
+			record.AuthID,
+			provider,
+			searchSince,
+		)
+		if errEarliest != nil {
+			log.WithError(errEarliest).
+				WithField("auth_id", record.AuthID).
+				Error("tenancy usage: infer quota window start")
+			return
+		}
+		if !found || occurredAt.Before(windowStart) {
+			windowStart = occurredAt
+		}
 	}
 	if windowStart.IsZero() {
 		windowStart = now
 	}
 
 	source := parsed.Source
-	if windowEnd.IsZero() && hasProviderWindow {
-		windowEnd = windowStart.Add(providerWindow)
-		source += ":provider-window"
+	if windowEnd.IsZero() && hasWindowDuration {
+		windowEnd = windowStart.Add(windowDuration)
+		if !hasHeaderWindow {
+			source += ":provider-window"
+		}
 	}
 	usedUnits := int64(0)
 	if parsed.Limit > 0 && parsed.Remaining <= parsed.Limit {
