@@ -3,6 +3,7 @@ package tenancy
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -251,6 +252,58 @@ func TestUsagePluginLedgerAndConfiguredWindowFallback(t *testing.T) {
 	}
 	if window.Source != "openai-tokens:provider-window" {
 		t.Fatalf("window source = %q, want configured fallback source", window.Source)
+	}
+}
+
+func TestCaptureQuotaWindowPrefersCodexHeaderWindow(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(6 * 24 * time.Hour)
+	plugin := NewUsagePlugin(
+		store,
+		config.TenancyConfig{Quota: config.TenancyQuota{
+			ProviderWindows: map[string]string{"codex": "1h"},
+		}},
+		nil,
+	)
+	plugin.now = func() time.Time { return now }
+	t.Cleanup(func() {
+		if errClose := plugin.Close(); errClose != nil {
+			t.Errorf("UsagePlugin.Close() error = %v", errClose)
+		}
+	})
+
+	plugin.captureQuotaWindow(usage.Record{
+		Provider: "codex",
+		AuthID:   "auth-1",
+		ResponseHeaders: testHeaders(map[string]string{
+			"X-Codex-Primary-Used-Percent":        "29",
+			"X-Codex-Primary-Reset-At":            strconv.FormatInt(resetAt.Unix(), 10),
+			"X-Codex-Primary-Reset-After-Seconds": "1",
+			"X-Codex-Primary-Window-Minutes":      "10080",
+		}),
+	}, now)
+
+	windows, errWindows := store.ListQuotaWindows(context.Background())
+	if errWindows != nil {
+		t.Fatalf("ListQuotaWindows() error = %v", errWindows)
+	}
+	if len(windows) != 1 {
+		t.Fatalf("ListQuotaWindows() length = %d, want 1", len(windows))
+	}
+	window := windows[0]
+	wantStart := resetAt.Add(-7 * 24 * time.Hour)
+	if !window.WindowStart.Equal(wantStart) {
+		t.Fatalf("window start = %v, want header-derived %v", window.WindowStart, wantStart)
+	}
+	if !window.WindowEnd.Equal(resetAt) {
+		t.Fatalf("window end = %v, want %v", window.WindowEnd, resetAt)
+	}
+	if window.UsedUnits != 2900 || window.LimitUnits != 10000 {
+		t.Fatalf("window usage = %d/%d, want 2900/10000", window.UsedUnits, window.LimitUnits)
+	}
+	if window.Source != "codex-primary" {
+		t.Fatalf("window source = %q, want codex-primary", window.Source)
 	}
 }
 
