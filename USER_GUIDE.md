@@ -212,7 +212,39 @@ Thinking suffixes still work: `auto(high)`.
 ## Appendix: admin
 
 Admins hold a key with the `admin` role and get one extra subtree. It is
-role-based, not the management key.
+role-based, **not** the management key — the management key does not grant access
+to these routes.
+
+### Bootstrapping the very first admin
+
+Creating users requires an admin, so the first one cannot come from the API. It is
+created offline, from a shell on the host, with the server stopped:
+
+```bash
+# 1. enable tenancy in config.yaml (tenancy.enabled: true), then:
+systemctl --user stop cliproxyapi.service
+
+cliproxyapi -config ~/.config/cliproxyapi/config.yaml \
+  --create-admin-user you@example.com
+# optionally: --create-admin-user-tier <tier>
+
+systemctl --user start cliproxyapi.service
+```
+
+It prints the API key **once**. It is stored only as a hash and cannot be
+recovered — save it before moving on.
+
+Re-running the command for an email that already exists does not create a second
+account; it issues an **additional** key for that user. That is the recovery path
+if an admin loses their only key, which is otherwise unrecoverable.
+
+This requires shell access to the host on purpose, and exposes no HTTP endpoint.
+
+Emails are stored lower-cased and matched case-insensitively, so
+`You@Example.com` and `you@example.com` are the same account. Only the display
+name keeps the original casing.
+
+### Managing users
 
 ```bash
 # create a user; response includes a one-time plaintext key to hand over
