@@ -1,9 +1,13 @@
 package tenancy
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 // End-to-end check against the exact header set captured from a live Codex
@@ -85,5 +89,61 @@ func TestCodexEmptyResetAtIsNotEpoch(t *testing.T) {
 	}
 	if got := parsed.ResetAt.Unix(); got != now.Add(time.Hour).Unix() {
 		t.Errorf("ResetAt = %d, want %d (now + Reset-After-Seconds)", got, now.Add(time.Hour).Unix())
+	}
+}
+
+// TestQuotaWindowCapturedWithoutUserAttribution pins that quota windows are
+// recorded for requests that resolve to no tenancy user. A window is keyed by
+// (auth_id, provider) and describes the upstream credential's rate-limit state,
+// which feeds balancing for the whole shared pool and is independent of who
+// called. Capturing it after the user-attribution early-returns starved the
+// balancer of every unattributed request -- which, in a deployment still using
+// plain api-keys, is all of them.
+func TestQuotaWindowCapturedWithoutUserAttribution(t *testing.T) {
+	store := newTestStore(t)
+	now := time.Unix(1786011000, 0).UTC()
+
+	plugin := NewUsagePlugin(store, config.TenancyConfig{}, func(context.Context, usage.Record) (*User, error) {
+		// No tenancy user for this caller, exactly like a legacy api-keys request.
+		return nil, ErrNotFound
+	})
+	plugin.now = func() time.Time { return now }
+	t.Cleanup(func() {
+		if errClose := plugin.Close(); errClose != nil {
+			t.Errorf("plugin.Close() error = %v", errClose)
+		}
+	})
+
+	headers := http.Header{}
+	headers.Set("X-Codex-Primary-Used-Percent", "29")
+	headers.Set("X-Codex-Primary-Reset-At", "1786498132")
+	headers.Set("X-Codex-Primary-Window-Minutes", "10080")
+
+	plugin.HandleUsage(context.Background(), usage.Record{
+		AuthID:          "codex-auth-1",
+		Provider:        "codex",
+		Model:           "gpt-5.6-sol",
+		RequestedAt:     now,
+		ResponseHeaders: headers,
+	})
+
+	windows, errList := store.ListQuotaWindows(context.Background())
+	if errList != nil {
+		t.Fatalf("ListQuotaWindows() error = %v", errList)
+	}
+	if len(windows) != 1 {
+		t.Fatalf("quota window count = %d, want 1 (unattributed requests must still record windows)", len(windows))
+	}
+	if windows[0].AuthID != "codex-auth-1" || windows[0].LimitUnits <= 0 {
+		t.Fatalf("window = %+v, want auth codex-auth-1 with a positive limit", windows[0])
+	}
+
+	// The ledger must still be empty: usage attribution genuinely requires a user.
+	var ledgerRows int
+	if errCount := store.db.QueryRow(`SELECT COUNT(*) FROM usage_ledger`).Scan(&ledgerRows); errCount != nil {
+		t.Fatalf("count usage_ledger: %v", errCount)
+	}
+	if ledgerRows != 0 {
+		t.Fatalf("usage_ledger rows = %d, want 0 for an unattributed request", ledgerRows)
 	}
 }

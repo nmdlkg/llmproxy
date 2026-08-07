@@ -87,6 +87,19 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	occurredAt := record.RequestedAt.UTC()
+	if occurredAt.IsZero() {
+		occurredAt = p.now().UTC()
+	}
+
+	// Capture the credential's quota window BEFORE user attribution. A quota
+	// window is keyed by (auth_id, provider) and describes the upstream account's
+	// rate-limit state, which is independent of who made the request; it feeds
+	// balancing for the whole shared pool. Doing this after the attribution
+	// early-returns starved the balancer of every unattributed request -- and in a
+	// deployment whose traffic still uses plain api-keys, that is all of them.
+	p.captureQuotaWindow(record, occurredAt)
+
 	user, errResolve := p.resolver(ctx, record)
 	if errResolve != nil {
 		if !errors.Is(errResolve, ErrNotFound) {
@@ -96,11 +109,6 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 	}
 	if user == nil || strings.TrimSpace(user.ID) == "" {
 		return
-	}
-
-	occurredAt := record.RequestedAt.UTC()
-	if occurredAt.IsZero() {
-		occurredAt = p.now().UTC()
 	}
 	pricing := ModelPricingFor(record.Model, p.cfg)
 	if hasUnpricedUsage(record, pricing) {
@@ -138,7 +146,6 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 				Warn("tenancy usage: record credential validation outcome")
 		}
 	}
-	p.captureQuotaWindow(record, occurredAt)
 }
 
 // Flush writes all currently buffered usage rows.
