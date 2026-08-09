@@ -64,7 +64,7 @@ func TestTokenCategoriesSumToTotalAndOmitZero(t *testing.T) {
 func TestHandleUsageEmitsOnlyAllowedAttributes(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(coreusage.Record) (string, bool) {
+	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(context.Context, coreusage.Record) (string, bool) {
 		return "user@example.com", true
 	})
 	if errPlugin != nil {
@@ -142,7 +142,7 @@ func TestHandleUsageEmitsOnlyAllowedAttributes(t *testing.T) {
 func TestHandleUsageDropsMissingEmail(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(coreusage.Record) (string, bool) {
+	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(context.Context, coreusage.Record) (string, bool) {
 		return "", false
 	})
 	if errPlugin != nil {
@@ -173,7 +173,7 @@ func TestHandleUsageDropsMissingEmail(t *testing.T) {
 func TestHandleUsageContainsResolverPanic(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(coreusage.Record) (string, bool) {
+	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(context.Context, coreusage.Record) (string, bool) {
 		panic("malformed resolver input")
 	})
 	if errPlugin != nil {
@@ -189,6 +189,32 @@ func TestHandleUsageContainsResolverPanic(t *testing.T) {
 		Model:  "gpt-5.6",
 		Detail: coreusage.Detail{TotalTokens: -1},
 	})
+}
+
+func TestHandleUsagePassesCancelledContextValuesToResolver(t *testing.T) {
+	type contextKey struct{}
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	var gotValue string
+	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(ctx context.Context, _ coreusage.Record) (string, bool) {
+		gotValue, _ = ctx.Value(contextKey{}).(string)
+		return "user@example.com", true
+	})
+	if errPlugin != nil {
+		t.Fatalf("newPluginWithMeterProvider() error = %v", errPlugin)
+	}
+	t.Cleanup(func() {
+		if errShutdown := plugin.Shutdown(context.Background()); errShutdown != nil {
+			t.Errorf("Shutdown() error = %v", errShutdown)
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "tenant-context"))
+	cancel()
+	plugin.HandleUsage(ctx, coreusage.Record{Model: "gpt-5.6"})
+	if gotValue != "tenant-context" {
+		t.Fatalf("resolver context value = %q, want tenant-context", gotValue)
+	}
 }
 
 func TestNewDisabledCreatesNoPlugin(t *testing.T) {
@@ -238,7 +264,7 @@ func TestHandleUsageDoesNotWaitForStalledExporter(t *testing.T) {
 	}
 	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(time.Millisecond))
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(coreusage.Record) (string, bool) {
+	plugin, errPlugin := newPluginWithMeterProvider(meterProvider, func(context.Context, coreusage.Record) (string, bool) {
 		return "user@example.com", true
 	})
 	if errPlugin != nil {

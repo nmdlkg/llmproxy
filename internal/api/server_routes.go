@@ -55,6 +55,7 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
+	rejectUnsupportedFallback := rejectForcedQuotaFallback()
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
@@ -77,12 +78,12 @@ func (s *Server) setupRoutes() {
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		v1.POST("/alpha/search", s.codexAlphaSearch)
-		v1.POST("/live", s.codexLiveHandler.Handle)
-		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
-		v1.POST("/realtime/calls", s.codexLiveHandler.Handle)
-		v1.GET("/realtime/calls/:call_id", s.codexLiveHandler.HandleSideband)
-		v1.GET("/realtime", s.codexLiveHandler.HandleSideband)
+		v1.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
+		v1.POST("/live", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
+		v1.GET("/live/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+		v1.POST("/realtime/calls", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
+		v1.GET("/realtime/calls/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+		v1.GET("/realtime", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
@@ -104,7 +105,7 @@ func (s *Server) setupRoutes() {
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
+		codexDirect.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
 	}
 
 	// Gemini compatible API routes

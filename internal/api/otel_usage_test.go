@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -155,5 +157,50 @@ func TestRegisterOTelUsageDisabledDoesNotRegister(t *testing.T) {
 	}
 	if registered {
 		t.Fatal("disabled OpenTelemetry usage plugin was registered")
+	}
+}
+
+func TestTenancyUsageEmailResolverUsesSharedIdentityPath(t *testing.T) {
+	dataDir := t.TempDir()
+	service, errService := tenancy.NewService(config.TenancyConfig{
+		Enabled: true,
+		DBPath:  filepath.Join(dataDir, "tenancy.db"),
+		Quota: config.TenancyQuota{
+			Window:  "24h",
+			BaseUSD: map[string]config.USDLimit{"default": 1},
+		},
+	}, dataDir, nil)
+	if errService != nil {
+		t.Fatalf("tenancy.NewService() error = %v", errService)
+	}
+	t.Cleanup(func() {
+		if errClose := service.Close(); errClose != nil {
+			t.Errorf("tenancy service Close() error = %v", errClose)
+		}
+	})
+
+	user := &tenancy.User{Email: "tenant@example.com", Role: tenancy.RoleUser, Tier: "default"}
+	if errCreate := service.Store().CreateUser(user); errCreate != nil {
+		t.Fatalf("CreateUser() error = %v", errCreate)
+	}
+	plaintext, _, errIssue := service.Store().IssueAPIKey(user.ID, "otel-test")
+	if errIssue != nil {
+		t.Fatalf("IssueAPIKey() error = %v", errIssue)
+	}
+	resolver := tenancyUsageEmailResolver(service)
+	if resolver == nil {
+		t.Fatal("tenancyUsageEmailResolver() = nil")
+	}
+
+	ctx, cancel := context.WithCancel(tenancy.WithUser(context.Background(), user))
+	cancel()
+	if email, ok := resolver(ctx, coreusage.Record{APIKey: user.ID}); !ok || email != user.Email {
+		t.Fatalf("context identity resolution = %q, %t; want %q, true", email, ok, user.Email)
+	}
+	if email, ok := resolver(context.Background(), coreusage.Record{APIKey: plaintext}); !ok || email != user.Email {
+		t.Fatalf("API-key fallback resolution = %q, %t; want %q, true", email, ok, user.Email)
+	}
+	if email, ok := resolver(context.Background(), coreusage.Record{APIKey: "missing-key"}); ok || email != "" {
+		t.Fatalf("unresolved identity = %q, %t; want empty, false", email, ok)
 	}
 }

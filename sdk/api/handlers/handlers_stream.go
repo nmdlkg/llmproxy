@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -174,7 +175,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	originalRequestedModel := modelName
 	modelName = h.resolveAutoRoutedModel(ctx, entryProtocol, modelName, rawJSON)
 	routeDecision, preparedRoute := preparedModelRouteFromContext(ctx)
-	if !preparedRoute {
+	if autoroute.ForcedFallback(ctx) {
+		routeDecision = modelRouteDecision{}
+	} else if !preparedRoute {
 		routeDecision = h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, true, execOptions)
 	}
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)

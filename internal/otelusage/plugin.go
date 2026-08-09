@@ -46,7 +46,7 @@ type Options struct {
 
 // UserEmailResolver maps one usage record to the tenant email already owned by
 // the tenancy service. Returning ok=false drops the complete record.
-type UserEmailResolver func(coreusage.Record) (email string, ok bool)
+type UserEmailResolver func(context.Context, coreusage.Record) (email string, ok bool)
 
 // Plugin records usage into an in-process MeterProvider. Its HandleUsage method
 // performs no network I/O; the PeriodicReader owns all collector communication.
@@ -157,19 +157,19 @@ func (p *Plugin) HandleUsage(ctx context.Context, record coreusage.Record) {
 	if p == nil || !p.active.Load() || p.resolver == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	defer func() {
 		if recover() != nil {
 			log.Warn("otel usage: dropped record after internal panic")
 		}
 	}()
 
-	email, ok := p.resolver(record)
+	email, ok := p.resolver(ctx, record)
 	email = strings.TrimSpace(email)
 	if !ok || email == "" {
 		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	model := normalizedDimension(record.Model)
