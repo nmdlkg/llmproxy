@@ -55,10 +55,13 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
+	rejectUnsupportedFallback := rejectForcedQuotaFallback()
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(s.credentialValidationMiddleware())
+	v1.Use(s.userQuotaMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -75,16 +78,18 @@ func (s *Server) setupRoutes() {
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		v1.POST("/alpha/search", s.codexAlphaSearch)
-		v1.POST("/live", s.codexLiveHandler.Handle)
-		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
-		v1.POST("/realtime/calls", s.codexLiveHandler.Handle)
-		v1.GET("/realtime/calls/:call_id", s.codexLiveHandler.HandleSideband)
-		v1.GET("/realtime", s.codexLiveHandler.HandleSideband)
+		v1.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
+		v1.POST("/live", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
+		v1.GET("/live/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+		v1.POST("/realtime/calls", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
+		v1.GET("/realtime/calls/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+		v1.GET("/realtime", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
 	openaiV1.Use(AuthMiddleware(s.accessManager))
+	openaiV1.Use(s.credentialValidationMiddleware())
+	openaiV1.Use(s.userQuotaMiddleware())
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -94,16 +99,20 @@ func (s *Server) setupRoutes() {
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(s.credentialValidationMiddleware())
+	codexDirect.Use(s.userQuotaMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
+		codexDirect.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
 	}
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(s.credentialValidationMiddleware())
+	v1beta.Use(s.userQuotaMiddleware())
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)
@@ -169,6 +178,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+	s.registerUserRoutes()
 }
 
 func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHost {

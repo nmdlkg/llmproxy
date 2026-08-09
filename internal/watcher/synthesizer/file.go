@@ -204,6 +204,23 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	if rawOwnerUserID, ok := metadata["owner_user_id"]; ok {
+		if ownerUserID, isStr := rawOwnerUserID.(string); isStr {
+			if trimmed := strings.TrimSpace(ownerUserID); trimmed != "" {
+				a.Attributes["owner_user_id"] = trimmed
+			}
+		}
+	}
+	if rawContributionTier, ok := metadata["contribution_tier"]; ok {
+		if contributionTier, isStr := rawContributionTier.(string); isStr {
+			if trimmed := strings.TrimSpace(contributionTier); trimmed != "" {
+				a.Attributes["contribution_tier"] = trimmed
+			}
+		}
+	}
+	if shared, ok := metadata["shared"].(bool); ok {
+		a.Attributes["shared"] = strconv.FormatBool(shared)
+	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")

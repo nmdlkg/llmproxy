@@ -35,6 +35,9 @@ type RoundRobinSelector struct {
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
 
+// PriorityResolver overrides an auth's attribute-based priority when ok is true.
+type PriorityResolver func(auth *Auth) (int, bool)
+
 type blockReason int
 
 const (
@@ -113,8 +116,34 @@ func (e *modelCooldownError) Headers() http.Header {
 	return headers
 }
 
-func authPriority(auth *Auth) int {
-	if auth == nil || auth.Attributes == nil {
+// SetPriorityResolver installs an optional effective-priority resolver.
+//
+// The fast scheduler resolves priority when an auth is upserted, not on every
+// request. Callers must call RefreshSchedulerEntry or RefreshSchedulerAll after
+// data used by the resolver changes so existing auths are re-bucketed.
+func (m *Manager) SetPriorityResolver(resolver PriorityResolver) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.priorityResolver = resolver
+	if m.scheduler != nil {
+		m.scheduler.setPriorityResolver(resolver)
+	}
+	m.mu.Unlock()
+	m.RefreshSchedulerAll()
+}
+
+func authPriority(auth *Auth, resolvers ...PriorityResolver) int {
+	if auth == nil {
+		return 0
+	}
+	if len(resolvers) > 0 && resolvers[0] != nil {
+		if priority, ok := resolvers[0](auth); ok {
+			return priority
+		}
+	}
+	if auth.Attributes == nil {
 		return 0
 	}
 	raw := strings.TrimSpace(auth.Attributes["priority"])

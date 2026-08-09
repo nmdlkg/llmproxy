@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	useraccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/user_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	log "github.com/sirupsen/logrus"
 )
@@ -79,18 +81,24 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 // ApplyAccessProviders reconciles the configured access providers against the
 // currently registered providers and updates the manager. It logs a concise
 // summary of the detected changes and returns whether any provider changed.
-func ApplyAccessProviders(manager *sdkaccess.Manager, oldCfg, newCfg *config.Config) (bool, error) {
+func ApplyAccessProviders(manager *sdkaccess.Manager, oldCfg, newCfg *config.Config, tenancyStore tenancy.Store) (bool, error) {
 	if manager == nil || newCfg == nil {
 		return false, nil
 	}
 
 	existing := manager.Providers()
+	if newCfg.Tenancy.Enabled && tenancyStore != nil {
+		useraccess.Register(tenancyStore)
+	} else {
+		useraccess.Register(nil)
+	}
 	configaccess.Register(&newCfg.SDKConfig)
 	providers, added, updated, removed, err := ReconcileProviders(oldCfg, newCfg, existing)
 	if err != nil {
 		log.Errorf("failed to reconcile request auth providers: %v", err)
 		return false, fmt.Errorf("reconciling access providers: %w", err)
 	}
+	providers = userProviderFirst(providers)
 
 	manager.SetProviders(providers)
 
@@ -102,6 +110,23 @@ func ApplyAccessProviders(manager *sdkaccess.Manager, oldCfg, newCfg *config.Con
 
 	log.Debug("auth providers unchanged after config update")
 	return false, nil
+}
+
+func userProviderFirst(providers []sdkaccess.Provider) []sdkaccess.Provider {
+	for index, provider := range providers {
+		if identifierFromProvider(provider) != useraccess.ProviderName {
+			continue
+		}
+		if index == 0 {
+			return providers
+		}
+		ordered := make([]sdkaccess.Provider, 0, len(providers))
+		ordered = append(ordered, provider)
+		ordered = append(ordered, providers[:index]...)
+		ordered = append(ordered, providers[index+1:]...)
+		return ordered
+	}
+	return providers
 }
 
 func identifierFromProvider(provider sdkaccess.Provider) string {

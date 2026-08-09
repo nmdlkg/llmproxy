@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLIProxyAPI User</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0c111b; --panel:#151d2b; --line:#2b3850; --text:#e8edf5; --muted:#9cabc0; --accent:#7aa2ff; --danger:#ff7c8c; }
+    * { box-sizing:border-box }
+    body { margin:0; font:15px/1.5 system-ui,sans-serif; color:var(--text); background:linear-gradient(145deg,#09101b,#111827 50%,#0b1220); min-height:100vh }
+    main { width:min(1080px,calc(100% - 32px)); margin:32px auto 64px }
+    header { display:flex; gap:20px; align-items:end; justify-content:space-between; margin-bottom:24px }
+    h1,h2 { margin:0 0 10px } h1 { font-size:28px } h2 { font-size:18px }
+    .muted { color:var(--muted) } .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)) }
+    section { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:0 14px 36px #0004 }
+    input,textarea,button { font:inherit; border-radius:8px; border:1px solid var(--line) }
+    input,textarea { width:100%; color:var(--text); background:#0b1320; padding:10px 12px }
+    textarea { min-height:150px; resize:vertical; font-family:ui-monospace,monospace; font-size:13px }
+    button { color:var(--text); background:#24324a; padding:9px 12px; cursor:pointer }
+    button:hover { border-color:var(--accent) } button.primary { background:#315cb8 } button.danger { color:#ffd7dc; background:#572632 }
+    .auth { display:grid; gap:8px; grid-template-columns:1fr auto; min-width:min(520px,100%) }
+    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center } .spread { justify-content:space-between }
+    .card { border:1px solid var(--line); border-radius:10px; padding:12px; margin-top:10px; background:#0d1522 }
+    .metric { font-size:22px; font-weight:700 } .badge { padding:2px 8px; border-radius:999px; background:#26364f; color:#c9d7ec }
+    #message { min-height:24px; margin:10px 0; color:var(--muted) } #message.error { color:var(--danger) }
+    code { overflow-wrap:anywhere; color:#bcd0ff } label { display:block; margin:10px 0 5px; color:#cbd6e6 }
+    @media(max-width:700px){ header{align-items:stretch;flex-direction:column}.auth{min-width:0} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>User dashboard</h1><div class="muted">Manage only your own credentials, quota, usage, and API keys.</div></div>
+    <div class="auth">
+      <input id="userKey" type="password" autocomplete="off" placeholder="User API key">
+      <button class="primary" id="connect">Connect</button>
+    </div>
+  </header>
+  <div id="message"></div>
+  <div class="grid">
+    <section>
+      <h2>Profile and quota</h2>
+      <div id="profile" class="muted">Connect to load your profile.</div>
+    </section>
+    <section>
+      <div class="row spread"><h2>Usage</h2><button id="refreshUsage">Refresh</button></div>
+      <div id="usage" class="muted">No usage loaded.</div>
+    </section>
+    <section>
+      <div class="row spread"><h2>Credentials</h2><button id="refreshCredentials">Refresh</button></div>
+      <label for="credentialFile">Credential JSON from a local CLI login</label>
+      <input id="credentialFile" type="file" accept=".json,application/json">
+      <div class="row" style="margin-top:10px"><button class="primary" id="uploadCredential">Register credential</button></div>
+      <div id="credentials"></div>
+    </section>
+    <section>
+      <div class="row spread"><h2>API keys</h2><button id="refreshKeys">Refresh</button></div>
+      <label for="keyLabel">New key label</label>
+      <input id="keyLabel" placeholder="laptop">
+      <div class="row" style="margin-top:10px"><button class="primary" id="rotateKey">Rotate / issue key</button></div>
+      <div id="issuedKey"></div>
+      <div id="keys"></div>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const message = (text, error=false) => { $("message").textContent=text; $("message").className=error?"error":""; };
+  const key = () => $("userKey").value.trim();
+  async function api(path, options={}) {
+    if (!key()) throw new Error("Enter your user API key.");
+    const headers = new Headers(options.headers || {});
+    headers.set("Authorization", "Bearer " + key());
+    if (options.body && !(options.body instanceof Blob)) headers.set("Content-Type", "application/json");
+    const response = await fetch("/v0/user" + path, {...options, headers});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || ("Request failed: " + response.status));
+    return data;
+  }
+  function quotaHTML(q) {
+    return `<div class="row spread"><div><div class="muted">Used</div><div class="metric">${q.used}</div></div><div><div class="muted">Limit</div><div class="metric">${q.limit}</div></div></div><div class="muted">Remaining ${q.remaining} · resets ${new Date(q.reset_at).toLocaleString()}</div>`;
+  }
+  async function loadProfile() {
+    const data = await api("/me");
+    $("profile").innerHTML = `<div class="row"><strong></strong><span class="badge"></span></div><div class="muted"></div><hr style="border:0;border-top:1px solid var(--line);margin:14px 0">${quotaHTML(data.quota)}`;
+    $("profile").querySelector("strong").textContent = data.display_name || data.email;
+    $("profile").querySelector(".badge").textContent = data.tier;
+    $("profile").querySelectorAll(".muted")[0].textContent = data.email + " · " + data.role;
+  }
+  async function loadUsage() {
+    const data = await api("/usage");
+    $("usage").innerHTML = quotaHTML(data.usage);
+  }
+  async function loadCredentials() {
+    const data = await api("/credentials");
+    const root = $("credentials"); root.replaceChildren();
+    for (const credential of data.credentials) {
+      const card = document.createElement("div"); card.className="card";
+      const title = document.createElement("strong"); title.textContent=credential.name || credential.id;
+      const detail = document.createElement("div"); detail.className="muted"; detail.textContent=(credential.provider || "unknown") + (credential.email ? " · " + credential.email : "");
+      const controls = document.createElement("div"); controls.className="row"; controls.style.marginTop="8px";
+      const shared = document.createElement("button"); shared.textContent=credential.shared ? "Shared: on" : "Shared: off";
+      shared.onclick=async()=>{ await api("/credentials/"+encodeURIComponent(credential.id),{method:"PATCH",body:JSON.stringify({shared:!credential.shared})}); await loadCredentials(); await loadProfile(); };
+      const remove = document.createElement("button"); remove.className="danger"; remove.textContent="Delete";
+      remove.onclick=async()=>{ if(confirm("Delete this credential?")){ await api("/credentials/"+encodeURIComponent(credential.id),{method:"DELETE"}); await Promise.all([loadCredentials(),loadProfile()]); } };
+      controls.append(shared,remove); card.append(title,detail,controls); root.append(card);
+    }
+    if (!data.credentials.length) root.textContent="No credentials registered.";
+  }
+  async function uploadCredential() {
+    const file = $("credentialFile").files[0]; if(!file) throw new Error("Choose a credential JSON file.");
+    const body = await file.text();
+    await api("/credentials?name="+encodeURIComponent(file.name),{method:"POST",body});
+    $("credentialFile").value=""; await Promise.all([loadCredentials(),loadProfile()]);
+  }
+  async function loadKeys() {
+    const data = await api("/api-keys");
+    const root=$("keys"); root.replaceChildren();
+    for(const item of data.api_keys.filter(item=>!item.revoked)){
+      const card=document.createElement("div"); card.className="card";
+      const label=document.createElement("strong"); label.textContent=item.label || "API key";
+      const hash=document.createElement("div"); hash.className="muted"; hash.textContent=item.hash.slice(0,12)+"… · created "+new Date(item.created_at).toLocaleString();
+      const revoke=document.createElement("button"); revoke.className="danger"; revoke.textContent="Revoke"; revoke.style.marginTop="8px";
+      revoke.onclick=async()=>{ if(confirm("Revoke this API key?")){ await api("/api-keys?hash="+encodeURIComponent(item.hash),{method:"DELETE"}); await loadKeys(); } };
+      card.append(label,hash,revoke); root.append(card);
+    }
+  }
+  async function rotateKey() {
+    const data=await api("/api-keys",{method:"POST",body:JSON.stringify({label:$("keyLabel").value.trim()})});
+    const root=$("issuedKey"); root.className="card"; root.replaceChildren();
+    const title=document.createElement("strong"); title.textContent="Copy this key now. It will not be shown again.";
+    const code=document.createElement("code"); code.textContent=data.api_key; code.style.display="block"; code.style.marginTop="8px";
+    root.append(title,code); await loadKeys();
+  }
+  async function run(task){ try{ message("Working…"); await task(); message("Ready."); }catch(error){ message(error.message || String(error),true); } }
+  $("connect").onclick=()=>run(()=>Promise.all([loadProfile(),loadUsage(),loadCredentials(),loadKeys()]));
+  $("refreshUsage").onclick=()=>run(loadUsage); $("refreshCredentials").onclick=()=>run(loadCredentials); $("refreshKeys").onclick=()=>run(loadKeys);
+  $("uploadCredential").onclick=()=>run(uploadCredential); $("rotateKey").onclick=()=>run(rotateKey);
+})();
+</script>
+</body>
+</html>
