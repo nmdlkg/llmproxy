@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/openrouter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -90,6 +91,10 @@ func main() {
 	var tuiMode bool
 	var standalone bool
 	var localModel bool
+	var remote string
+	var userKey string
+	var createAdminUser string
+	var createAdminUserTier string
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
@@ -109,6 +114,10 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
+	flag.StringVar(&remote, "remote", "", "Store a login credential on a remote CLIProxyAPI server")
+	flag.StringVar(&userKey, "user-key", "", "User API key for --remote credential storage")
+	flag.StringVar(&createAdminUser, "create-admin-user", "", "Create or recover a tenancy admin user by email")
+	flag.StringVar(&createAdminUserTier, "create-admin-user-tier", "default", "Tier for a newly created admin user")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -145,6 +154,16 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
+	loginCommand := antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	remoteRequested := strings.TrimSpace(remote) != "" || strings.TrimSpace(userKey) != ""
+	if remoteRequested && !loginCommand {
+		log.Error("--remote and --user-key may only be used with a provider login flag")
+		return
+	}
+	if remoteRequested && (strings.TrimSpace(remote) == "" || strings.TrimSpace(userKey) == "") {
+		log.Error("--remote and --user-key must be provided together")
+		return
+	}
 
 	// Core application variables.
 	var err error
@@ -259,6 +278,11 @@ func main() {
 	}
 	if value, ok := lookupEnv("OBJECTSTORE_LOCAL_PATH", "objectstore_local_path"); ok {
 		objectStoreLocalPath = value
+	}
+	if remoteRequested {
+		usePostgresStore = false
+		useObjectStore = false
+		useGitStore = false
 	}
 
 	// Check for cloud deploy mode only on first execution
@@ -584,11 +608,14 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
+	commandMode := createAdminUser != "" || vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
-	serverOptions := []api.ServerOption(nil)
+	serverOptions := []api.ServerOption{
+		api.WithTenancyService(),
+		api.WithOTelUsage(),
+	}
 	if exampleAPIKeySafeMode {
 		matches := safemode.ExampleAPIKeys(cfg.APIKeys)
 		log.WithField("api_keys", strings.Join(matches, ",")).Error("unsafe example API key configured; proxy API endpoints disabled until api-keys is updated")
@@ -596,7 +623,14 @@ func main() {
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.
-	if usePostgresStore {
+	if remoteRequested {
+		remoteStore, errRemoteStore := cmd.NewRemoteStore(remote, userKey)
+		if errRemoteStore != nil {
+			log.WithError(errRemoteStore).Error("failed to configure remote credential storage")
+			return
+		}
+		sdkAuth.RegisterTokenStore(remoteStore)
+	} else if usePostgresStore {
 		sdkAuth.RegisterTokenStore(pgStoreInst)
 	} else if useObjectStore {
 		sdkAuth.RegisterTokenStore(objectStoreInst)
@@ -633,7 +667,12 @@ func main() {
 
 	// Handle different command modes based on the provided flags.
 
-	if vertexImport != "" {
+	if createAdminUser != "" {
+		if errCreateAdmin := cmd.DoCreateAdminUser(cfg, createAdminUser, createAdminUserTier, os.Stdout); errCreateAdmin != nil {
+			log.Errorf("create-admin-user failed: %v", errCreateAdmin)
+			os.Exit(1)
+		}
+	} else if vertexImport != "" {
 		// Handle Vertex service account import
 		cmd.DoVertexImport(cfg, vertexImport, vertexImportPrefix)
 	} else if antigravityLogin {
@@ -667,7 +706,7 @@ func main() {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				misc.StartAntigravityVersionUpdater(context.Background())
-				startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+				startModelCatalogUpdaters(cfg, localModel)
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
 				log.AddHook(hook)
@@ -741,7 +780,7 @@ func main() {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
-			startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+			startModelCatalogUpdaters(cfg, localModel)
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
@@ -757,7 +796,8 @@ func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCo
 	return !homeEnabled, true
 }
 
-func startModelCatalogUpdaters(localModel, homeEnabled bool) {
+func startModelCatalogUpdaters(cfg *config.Config, localModel bool) {
+	homeEnabled := cfg != nil && cfg.Home.Enabled
 	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
@@ -767,6 +807,13 @@ func startModelCatalogUpdaters(localModel, homeEnabled bool) {
 	} else if homeEnabled {
 		log.Info("Home mode: remote models.json updates disabled; Codex client model list follows Home model IDs")
 	}
+	// The OpenRouter catalog follows the same --local-model contract: when remote
+	// fetching is disabled it still audits mapping and pricing coverage against
+	// the embedded snapshot, but performs no network request.
+	openrouter.StartUpdater(context.Background(), openrouter.UpdaterOptions{
+		Config:        cfg,
+		DisableRemote: localModel,
+	})
 }
 
 func pluginBootstrapConfigPath(args []string, defaultPath string) string {

@@ -32,6 +32,7 @@ var (
 
 type oauthSession struct {
 	Provider  string
+	UserID    string
 	Status    string
 	Source    string
 	Metadata  map[string]any
@@ -71,8 +72,13 @@ func (s *oauthSessionStore) purgeExpiredLocked(now time.Time) {
 }
 
 func (s *oauthSessionStore) Register(state, provider string) {
+	s.RegisterForUser(state, provider, "")
+}
+
+func (s *oauthSessionStore) RegisterForUser(state, provider, userID string) {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
+	userID = strings.TrimSpace(userID)
 	if state == "" || provider == "" {
 		return
 	}
@@ -84,6 +90,7 @@ func (s *oauthSessionStore) Register(state, provider string) {
 	s.purgeExpiredLocked(now)
 	s.sessions[state] = oauthSession{
 		Provider:  provider,
+		UserID:    userID,
 		Status:    "",
 		Source:    oauthSessionSourceBuiltin,
 		CreatedAt: now,
@@ -263,6 +270,10 @@ var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 
 func RegisterOAuthSession(state, provider string) { oauthSessions.Register(state, provider) }
 
+func RegisterOAuthSessionForUser(state, provider, userID string) {
+	oauthSessions.RegisterForUser(state, provider, userID)
+}
+
 func RegisterPluginOAuthSession(state, provider string, metadata map[string]any) error {
 	return oauthSessions.RegisterPlugin(state, provider, metadata)
 }
@@ -293,6 +304,14 @@ func GetOAuthSessionDetails(state string) (provider string, status string, isPlu
 		return "", "", false, nil, false, false
 	}
 	return session.Provider, session.Status, session.Source == oauthSessionSourcePlugin, cloneOAuthSessionMetadata(session.Metadata), session.Completed, true
+}
+
+// OAuthSessionBelongsTo reports whether a state is bound to the supplied user.
+// Empty user IDs are reserved for management-initiated sessions.
+func OAuthSessionBelongsTo(state, userID string) bool {
+	session, ok := oauthSessions.Get(state)
+	return ok && strings.TrimSpace(session.UserID) != "" &&
+		strings.TrimSpace(session.UserID) == strings.TrimSpace(userID)
 }
 
 func IsOAuthSessionPending(state, provider string) bool {

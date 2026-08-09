@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -22,7 +23,11 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 	if s == nil || s.accessManager == nil || newCfg == nil {
 		return false
 	}
-	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg); err != nil {
+	var tenancyStore tenancy.Store
+	if s.tenancyService != nil {
+		tenancyStore = s.tenancyService.Store()
+	}
+	if _, err := access.ApplyAccessProviders(s.accessManager, oldCfg, newCfg, tenancyStore); err != nil {
 		return false
 	}
 	return true

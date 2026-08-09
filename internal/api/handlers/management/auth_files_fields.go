@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/authfiles"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -666,10 +667,16 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
 	}
+	if errOwner := authfiles.StampOwnerFromContext(ctx, record); errOwner != nil {
+		return "", fmt.Errorf("owner post-auth hook failed: %w", errOwner)
+	}
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
 			return "", fmt.Errorf("post-auth hook failed: %w", err)
 		}
+	}
+	if errOwner := authfiles.StampOwnerFromContext(ctx, record); errOwner != nil {
+		return "", fmt.Errorf("owner post-auth hook failed: %w", errOwner)
 	}
 	savedPath, errSave := store.Save(ctx, record)
 	if errSave != nil {

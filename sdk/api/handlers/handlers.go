@@ -15,8 +15,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -177,6 +179,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
+	}
+	if preferred := preferredAuthIDsFromContext(ctx); len(preferred) > 0 {
+		meta[coreauth.PreferredAuthIDsMetadataKey] = preferred
 	}
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
@@ -375,7 +380,7 @@ func (h *BaseAPIHandler) GetAlt(c *gin.Context) string {
 // Parameters:
 //   - handler: The API handler associated with the request.
 //   - c: The Gin context of the current request.
-//   - ctx: The parent context (caller values/deadlines are preserved; request context adds cancellation and request ID).
+//   - ctx: The parent context (caller values/deadlines are preserved; request context adds cancellation, request ID, and immutable tenant policy values).
 //
 // Returns:
 //   - context.Context: The new context with cancellation and embedded values.
@@ -396,6 +401,14 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		} else if requestID = logging.GetGinRequestID(c); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
+		}
+	}
+	if requestCtx != nil {
+		if autoroute.ForcedFallback(requestCtx) {
+			parentCtx = autoroute.WithForcedFallback(parentCtx)
+		}
+		if user, ok := tenancy.UserFromContext(requestCtx); ok {
+			parentCtx = tenancy.WithUser(parentCtx, user)
 		}
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)

@@ -125,6 +125,22 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# OTLP/HTTP usage metric export. This is applied at process startup; restart the
+# proxy after changing it. The endpoint is required when enabled and has no
+# implicit default. Port 4328 is the conventional dedicated collector port for
+# this deployment (4317/4318 serve laptop tools; 4319/4320 serve Tempo).
+otel:
+  enabled: false
+  # Example: http://collector.tailnet:4328
+  endpoint: ""
+  export-interval: "15s"
+  service-name: "llmproxy"
+  # Empty derives the version from build metadata when available.
+  service-version: ""
+  environment: ""
+  # Process-static labels only. Reserved service/deployment/host names are rejected.
+  resource-attributes: {}
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.
@@ -133,6 +149,139 @@ redis-usage-queue-retention-seconds: 60
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
+
+# OpenRouter pricing and benchmark catalogs.
+#
+# `enabled` is the master switch. While it is false there is no goroutine, no
+# network access, and no change to quota or routing behaviour: cost-basis and
+# benchmark-source below have no effect, so quota falls back to
+# model-price-overrides and auto-routing keeps the configured tier order.
+openrouter:
+  enabled: false
+  # Required only for benchmarks. When empty, OPENROUTER_API_KEY is used.
+  api-key: ""
+  base-url: "https://openrouter.ai/api/v1"
+  refresh-interval: "6h"
+  # Explicit mappings are authoritative. Unmapped names use only conservative
+  # unique case-insensitive/vendor-prefix/date-suffix matching.
+  model-map:
+    "gemini-2.5-flash": "google/gemini-2.5-flash"
+  # static uses only tenancy.quota.model-price-overrides. openrouter uses
+  # catalog prices first and those overrides to fill missing fields/models.
+  cost-basis: "static"
+  # Empty disables benchmark ranking. Other values: artificial-analysis, design-arena.
+  benchmark-source: ""
+
+# Prompt-difficulty-based automatic model selection for the "auto" model name.
+# Requires a vLLM semantic-router sidecar (see deploy/semantic-router/).
+# When disabled, or if the sidecar is unreachable or low-confidence, "auto"
+# resolves exactly as before (newest available registered model).
+auto-routing:
+  enabled: false
+  # semantic-router apiserver. Only its classification API is called; Envoy is
+  # not in the request path.
+  router-url: "http://127.0.0.1:8080"
+  # Bounds the classification call so it can never stall a request.
+  timeout-ms: 800
+  min-confidence: 0.5
+  cache-ttl-seconds: 300
+  max-prompt-chars: 4000
+  default-tier: "balanced"
+  # Also used for quota-exhausted users when quota-fallback is true.
+  fallback-model: "gemini-2.5-flash"
+  # Downgrade over-quota users to fallback-model instead of returning 429.
+  quota-fallback: true
+  tiers:
+    cheap:
+      models: ["gemini-2.5-flash"]
+    balanced:
+      models: ["gpt-5.6", "claude-sonnet-5"]
+    strong:
+      models: ["claude-opus-5", "gpt-5.6-sol"]
+  # semantic-router category -> tier label.
+  categories:
+    math: "strong"
+    code: "strong"
+    creative: "balanced"
+    general: "cheap"
+
+# Multi-user mode: per-user API keys, credential ownership, and usage
+# attribution. Disabled means no database file, no goroutine, no usage plugin,
+# and no change to existing api-keys behavior.
+#
+# Credential ownership is NOT stored here. It lives in each auth file as the
+# top-level keys owner_user_id / shared / contribution_tier, so it survives a
+# lost database and works with every auth store backend.
+tenancy:
+  enabled: false
+  # Empty defaults to <auth-dir>/../tenancy.db
+  db-path: ""
+  # How often a user's own credential is softly preferred for their request, so
+  # their OAuth token gets validated by real traffic instead of a synthetic
+  # probe (this proxy has no credential health prober).
+  #
+  # The preference is soft: if that credential is cooling down, disabled, or
+  # does not serve the requested model, selection falls back to the shared pool
+  # and the request never fails because of this. Only a SUCCESSFUL request
+  # advances the interval, and a user with several credentials has them
+  # validated in rotation. Set to 0 to disable.
+  validation-interval: "1h"
+  quota:
+    # false = observe-only: usage is still attributed and recorded, but no
+    # request is ever denied and the quota check is not consulted at all.
+    # Note this is deliberately NOT the same as setting a very large limit:
+    # the quota check fails CLOSED on store errors, so a large limit would
+    # still return 429 if the ledger were unreadable.
+    enforce: false
+    # Rolling window. Go's duration parser has no day unit, so use hours.
+    # 168h = weekly.
+    window: "168h"
+    # USD allowance per rolling window. YAML uses ordinary decimal dollars;
+    # accounting stores exact integer nano-USD internally.
+    base-usd:
+      default: 5.0
+    # Additional USD per contributed credential, by provider and plan tier.
+    # "default" applies when the plan is unknown. Codex plan tiers come from
+    # the id_token JWT.
+    contribution-usd:
+      codex:
+        pro: 20.0
+        plus: 8.0
+        team: 12.0
+        free: 1.0
+      claude:
+        default: 8.0
+      gemini:
+        default: 5.0
+    # Required token prices in the industry-standard $ per 1M tokens.
+    # Under static cost-basis these are the only prices. Under openrouter they
+    # fill catalog gaps. Keep "*" as a non-zero last-resort floor so unmatched
+    # local models never become silently free; add exact entries where known.
+    model-price-overrides:
+      "*":
+        prompt: 0.075
+        completion: 0.30
+        reasoning: 0.30
+        cache-read: 0.075
+        cache-write: 0.075
+      "gemini-2.5-flash":
+        prompt: 0.30
+        completion: 2.50
+        reasoning: 2.50
+        cache-read: 0.075
+        cache-write: 0.30
+    # Assumed quota window length when an upstream sends no rate-limit reset
+    # header, used to infer when a credential's allowance refreshes.
+    provider-windows:
+      codex: "5h"
+      claude: "5h"
+      gemini: "24h"
+  balancing:
+    # Prefer credentials whose window resets soon and that still have unused
+    # budget, so remaining allowance is not wasted.
+    urgency-horizon: "30m"
+    high-water: 0.9
+    urgency-bonus: 1
 
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false

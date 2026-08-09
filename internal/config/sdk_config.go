@@ -58,6 +58,22 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// AutoRouting configures prompt-difficulty-based automatic model selection for the
+	// "auto" model name. Disabled by default.
+	//
+	// This lives on SDKConfig rather than Config because the API handlers that resolve
+	// model names only receive the SDKConfig snapshot (see effectiveSDKConfig). Since
+	// SDKConfig is inlined into Config, the YAML key stays top-level "auto-routing".
+	AutoRouting AutoRoutingConfig `yaml:"auto-routing" json:"auto-routing"`
+
+	// OpenRouter configures the external pricing and benchmark catalogs used by
+	// both server-side quota accounting and handler-side automatic routing.
+	//
+	// This lives on SDKConfig rather than Config because API handlers only receive
+	// the SDKConfig snapshot (see effectiveSDKConfig). Since SDKConfig is inlined
+	// into Config, the YAML key stays top-level "openrouter".
+	OpenRouter OpenRouterConfig `yaml:"openrouter" json:"openrouter"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

@@ -98,7 +98,13 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
+	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
+		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
+	}
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeTenancyConfig()
+	cfg.SanitizeAutoRoutingConfig()
+	cfg.SanitizeOpenRouterConfig()
 
 	return &cfg, nil
 }

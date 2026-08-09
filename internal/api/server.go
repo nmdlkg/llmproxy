@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
+	userHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/user"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -26,9 +27,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
@@ -81,6 +85,7 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+	user *userHandlers.Handler
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
@@ -103,6 +108,12 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
+
+	tenancyService *tenancy.Service
+	tenancyInitErr error
+
+	otelUsageSink    *otelUsageSink
+	otelUsageInitErr error
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -185,6 +196,38 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
+	if optionState.tenancyEnabled {
+		tenancyService, errTenancy := tenancy.NewService(cfg.Tenancy, cfg.AuthDir, authManager)
+		if errTenancy != nil {
+			s.tenancyInitErr = errTenancy
+			log.WithError(errTenancy).Error("failed to initialize tenancy service")
+		} else {
+			s.tenancyService = tenancyService
+		}
+	}
+	if optionState.otelUsageEnabled {
+		otelOptions, usedEnvironmentFallback, errOptions := otelUsageOptions(cfg)
+		if usedEnvironmentFallback {
+			warnOTelEnvironmentFallback()
+		}
+		if errOptions != nil {
+			s.otelUsageInitErr = errOptions
+			log.WithError(errOptions).Error("failed to configure OpenTelemetry usage export")
+		} else {
+			otelSink, errOTelUsage := registerOTelUsage(
+				context.Background(),
+				otelOptions,
+				tenancyUsageEmailResolver(s.tenancyService),
+				coreusage.RegisterNamedPlugin,
+			)
+			if errOTelUsage != nil {
+				s.otelUsageInitErr = errOTelUsage
+				log.WithError(errOTelUsage).Error("failed to initialize OpenTelemetry usage export")
+			} else {
+				s.otelUsageSink = otelSink
+			}
+		}
+	}
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
@@ -215,6 +258,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthPersistHook != nil {
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
+	s.user = userHandlers.NewHandler(
+		cfg,
+		authManager,
+		s.tenancyService,
+		sdkAuth.GetTokenStore(),
+		s.mgmt,
+	)
 	s.localPassword = optionState.localPassword
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
@@ -250,6 +300,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: engine,
 	}
+	if optionState.otelUsageEnabled {
+		armOTelReloadNotice()
+	}
 
 	return s
 }
@@ -262,6 +315,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
+	}
+	if s.tenancyInitErr != nil {
+		return fmt.Errorf("failed to start HTTP server: initialize tenancy: %w", s.tenancyInitErr)
+	}
+	if s.otelUsageInitErr != nil {
+		return fmt.Errorf("failed to start HTTP server: initialize OpenTelemetry usage export: %w", s.otelUsageInitErr)
 	}
 
 	addr := s.server.Addr
@@ -390,8 +449,24 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
+	var stopErrors []error
 	if errShutdown != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
+		stopErrors = append(stopErrors, fmt.Errorf("failed to shutdown HTTP server: %w", errShutdown))
+	}
+	if s.otelUsageSink != nil {
+		if otelPlugin := s.otelUsageSink.detach(); otelPlugin != nil {
+			if errShutdownOTel := otelPlugin.Shutdown(ctx); errShutdownOTel != nil {
+				stopErrors = append(stopErrors, errShutdownOTel)
+			}
+		}
+	}
+	if s.tenancyService != nil {
+		if errCloseTenancy := s.tenancyService.Close(); errCloseTenancy != nil {
+			stopErrors = append(stopErrors, errCloseTenancy)
+		}
+	}
+	if len(stopErrors) > 0 {
+		return errors.Join(stopErrors...)
 	}
 
 	log.Debug("API server stopped")

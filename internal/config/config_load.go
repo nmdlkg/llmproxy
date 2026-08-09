@@ -168,8 +168,22 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	// Normalize and validate process-static OpenTelemetry export settings.
+	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
+		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
+	}
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+
+	// Normalize multi-user tenancy settings and apply defaults.
+	cfg.SanitizeTenancyConfig()
+
+	// Normalize automatic model routing settings and apply defaults.
+	cfg.SanitizeAutoRoutingConfig()
+
+	// Normalize OpenRouter catalog settings and apply defaults.
+	cfg.SanitizeOpenRouterConfig()
 
 	// Return the populated configuration struct.
 	return &cfg, nil

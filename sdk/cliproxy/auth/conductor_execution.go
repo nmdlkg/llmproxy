@@ -20,6 +20,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// PreferredAuthIDsMetadataKey carries auth IDs that should be tried softly on
+// the first credential pick before normal priority selection.
+const PreferredAuthIDsMetadataKey = "preferred_auth_ids"
+
 // Execute performs a non-streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -949,6 +953,49 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	default:
 		return ""
 	}
+}
+
+func preferredAuthIDsFromMetadata(meta map[string]any) map[string]struct{} {
+	if len(meta) == 0 {
+		return nil
+	}
+	raw, ok := meta[PreferredAuthIDsMetadataKey]
+	if !ok || raw == nil {
+		return nil
+	}
+	preferred := make(map[string]struct{})
+	add := func(value any) {
+		var authID string
+		switch val := value.(type) {
+		case string:
+			authID = strings.TrimSpace(val)
+		case []byte:
+			authID = strings.TrimSpace(string(val))
+		}
+		if authID != "" {
+			preferred[authID] = struct{}{}
+		}
+	}
+	switch val := raw.(type) {
+	case string, []byte:
+		add(val)
+	case []string:
+		for _, authID := range val {
+			add(authID)
+		}
+	case [][]byte:
+		for _, authID := range val {
+			add(authID)
+		}
+	case []any:
+		for _, authID := range val {
+			add(authID)
+		}
+	}
+	if len(preferred) == 0 {
+		return nil
+	}
+	return preferred
 }
 
 func disallowFreeAuthFromMetadata(meta map[string]any) bool {
