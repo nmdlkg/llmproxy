@@ -182,9 +182,9 @@ func tenancyUsageEmailResolver(service *tenancy.Service) otelusage.UserEmailReso
 	if service == nil || service.Store() == nil {
 		return nil
 	}
-	resolveUser := tenancy.ResolveAPIKeyUser(service.Store())
-	return func(record coreusage.Record) (string, bool) {
-		user, errResolve := resolveUser(context.Background(), record)
+	resolveUser := tenancy.ResolveUsageUser(service.Store())
+	return func(ctx context.Context, record coreusage.Record) (string, bool) {
+		user, errResolve := resolveUser(ctx, record)
 		if errResolve != nil {
 			if !errors.Is(errResolve, tenancy.ErrNotFound) {
 				log.WithError(errResolve).Debug("otel usage: user attribution failed")

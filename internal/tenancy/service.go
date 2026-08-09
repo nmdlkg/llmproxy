@@ -79,7 +79,7 @@ func NewService(cfg config.TenancyConfig, authDir string, authManager *coreauth.
 	}
 
 	validation := newCredentialValidator(store, credentials)
-	usagePlugin := NewUsagePlugin(store, cfg, withContextUser(ResolveAPIKeyUser(store)))
+	usagePlugin := NewUsagePlugin(store, cfg, ResolveUsageUser(store))
 	usagePlugin.validator = validation
 	usageSink := &serviceUsageSink{plugin: usagePlugin}
 	service := &Service{
@@ -190,6 +190,12 @@ func withContextUser(fallback UserResolver) UserResolver {
 		}
 		return fallback(ctx, record)
 	}
+}
+
+// ResolveUsageUser returns the shared usage attribution path: request context
+// first, then the hashed API-key lookup used by non-request publishers.
+func ResolveUsageUser(store Store) UserResolver {
+	return withContextUser(ResolveAPIKeyUser(store))
 }
 
 func (s *serviceUsageSink) HandleUsage(ctx context.Context, record usage.Record) {

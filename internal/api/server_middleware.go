@@ -189,6 +189,8 @@ type credentialValidationChecker interface {
 	PreferredAuthIDs(userID string, interval time.Duration) ([]string, error)
 }
 
+const quotaFallbackRetryAfterKey = "quotaFallbackRetryAfterSeconds"
+
 func (s *Server) credentialValidationMiddleware() gin.HandlerFunc {
 	return CredentialValidationMiddleware(func() *config.Config {
 		if s == nil {
@@ -280,23 +282,46 @@ func UserQuotaMiddleware(configProvider func() *config.Config, quota userQuotaCh
 			c.Next()
 			return
 		}
-		if cfg.AutoRouting.QuotaFallback {
-			if c.Request != nil {
-				c.Request = c.Request.WithContext(autoroute.WithForcedFallback(c.Request.Context()))
-			}
-			c.Next()
-			return
-		}
-
 		retryAfterSeconds := int64(math.Ceil(retryAfter.Seconds()))
 		if retryAfterSeconds < 1 {
 			retryAfterSeconds = 1
 		}
-		c.Header("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
-		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-			"error": "User quota exceeded or quota data is temporarily unavailable",
-		})
+		// Home resolves models outside the SDK handler, so it cannot honor the
+		// forced fallback marker. Deny instead of serving the original model.
+		if cfg.AutoRouting.QuotaFallback &&
+			strings.TrimSpace(cfg.AutoRouting.FallbackModel) != "" &&
+			!cfg.Home.Enabled && c.Request != nil {
+			c.Set(quotaFallbackRetryAfterKey, retryAfterSeconds)
+			c.Request = c.Request.WithContext(autoroute.WithForcedFallback(c.Request.Context()))
+			c.Next()
+			return
+		}
+
+		abortUserQuotaExceeded(c, retryAfterSeconds)
 	}
+}
+
+func rejectForcedQuotaFallback() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request == nil || !autoroute.ForcedFallback(c.Request.Context()) {
+			c.Next()
+			return
+		}
+		retryAfterSeconds := int64(1)
+		if stored, ok := c.Get(quotaFallbackRetryAfterKey); ok {
+			if seconds, valid := stored.(int64); valid && seconds > 0 {
+				retryAfterSeconds = seconds
+			}
+		}
+		abortUserQuotaExceeded(c, retryAfterSeconds)
+	}
+}
+
+func abortUserQuotaExceeded(c *gin.Context, retryAfterSeconds int64) {
+	c.Header("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+		"error": "User quota exceeded or quota data is temporarily unavailable",
+	})
 }
 
 func tenantUserFromAccessResult(result *sdkaccess.Result) (*tenancy.User, bool) {

@@ -308,7 +308,7 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 }
 
 func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtocol, modelName string, rawJSON []byte) string {
-	if h == nil || h.Cfg == nil || !h.Cfg.AutoRouting.Enabled {
+	if h == nil || h.Cfg == nil {
 		return modelName
 	}
 	if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
@@ -316,6 +316,19 @@ func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtoc
 	}
 
 	suffix := thinking.ParseSuffix(modelName)
+	if autoroute.ForcedFallback(ctx) {
+		fallbackModel := strings.TrimSpace(h.Cfg.AutoRouting.FallbackModel)
+		if fallbackModel == "" {
+			return ""
+		}
+		if suffix.HasSuffix {
+			return fmt.Sprintf("%s(%s)", fallbackModel, suffix.RawSuffix)
+		}
+		return fallbackModel
+	}
+	if !h.Cfg.AutoRouting.Enabled {
+		return modelName
+	}
 	if suffix.ModelName != "auto" && !strings.HasPrefix(suffix.ModelName, "auto:") {
 		return modelName
 	}
@@ -333,6 +346,9 @@ func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtoc
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
+	if autoroute.ForcedFallback(ctx) {
+		return decision
+	}
 	host := h.modelRouterHost()
 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
 		return decision
