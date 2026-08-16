@@ -1,0 +1,123 @@
+name: upstream-drift
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-upstream-drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/router-for-me/CLIProxyAPI
+          git fetch upstream --tags
+
+      - name: Compute upstream drift
+        id: drift
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Tags reachable from upstream/main but not yet merged into this fork.
+          new_tags="$(git tag --list 'v*' \
+            --merged upstream/main \
+            --no-merged HEAD \
+            --sort=version:refname)"
+
+          if [ -z "${new_tags}" ]; then
+            echo "Fork already contains the newest upstream release."
+            echo "behind_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_tag="$(printf '%s\n' "${new_tags}" | tail -n 1)"
+          behind_count="$(git rev-list --count "HEAD..${latest_tag}")"
+          tag_count="$(printf '%s\n' "${new_tags}" | wc -l | tr -d ' ')"
+
+          # Upstream releases very frequently; only the newest handful are useful.
+          recent_tags="$(printf '%s\n' "${new_tags}" | tail -n 15)"
+
+          {
+            echo "latest_tag=${latest_tag}"
+            echo "behind_count=${behind_count}"
+            echo "tag_count=${tag_count}"
+            echo "recent_tags<<DRIFT_EOF"
+            printf '%s\n' "${recent_tags}"
+            echo "DRIFT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Latest upstream tag: ${latest_tag}"
+          echo "New upstream tags: ${tag_count}"
+          echo "Commits missing from fork: ${behind_count}"
+
+      - name: Open or update upstream tracking issue
+        if: steps.drift.outputs.behind_count != '0'
+        env:
+          LATEST_TAG: ${{ steps.drift.outputs.latest_tag }}
+          BEHIND_COUNT: ${{ steps.drift.outputs.behind_count }}
+          TAG_COUNT: ${{ steps.drift.outputs.tag_count }}
+          RECENT_TAGS: ${{ steps.drift.outputs.recent_tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker_label="upstream-drift"
+          marker_title="[upstream-drift] Fork is behind upstream"
+
+          gh label create "${marker_label}" \
+            --color "B60205" \
+            --description "Upstream release drift tracking" \
+            --force >/dev/null
+
+          # The label is the idempotency key: at most one open issue carries it.
+          issue_number="$(gh issue list \
+            --state open \
+            --label "${marker_label}" \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          tag_list="$(printf '%s\n' "${RECENT_TAGS}" | sed '/^[[:space:]]*$/d' | sed 's/^/- /')"
+          ledger_url="https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/fork-patches.md"
+
+          body="$(cat <<EOF
+          Upstream has releases that are not merged into this fork.
+
+          - Latest upstream tag: \`${LATEST_TAG}\`
+          - New upstream tags: ${TAG_COUNT}
+          - Commits the fork is behind: ${BEHIND_COUNT}
+          - Patch ledger: [docs/fork-patches.md](${ledger_url})
+
+          Most recent upstream tags:
+
+          ${tag_list}
+
+          Do not chase every tag. Merge the newest one on a \`chore/upstream-<tag>\` branch,
+          then walk the seam ledger in \`docs/fork-patches.md\` and run its test commands.
+
+          This issue is updated in place by the \`upstream-drift\` workflow. Close it once the merge lands.
+          EOF
+          )"
+
+          if [ -n "${issue_number}" ]; then
+            gh issue edit "${issue_number}" --title "${marker_title}" --body "${body}"
+            echo "Updated issue #${issue_number}"
+          else
+            gh issue create \
+              --title "${marker_title}" \
+              --body "${body}" \
+              --label "${marker_label}"
+          fi
