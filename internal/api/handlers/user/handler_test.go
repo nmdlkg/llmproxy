@@ -341,6 +341,77 @@ func TestUserAndAdminGates(t *testing.T) {
 	}
 }
 
+func TestAdminCreateUserInitialAPIKey(t *testing.T) {
+	harness := newUserTestHarness(t, true)
+
+	t.Run("issued when requested", func(t *testing.T) {
+		response := harness.request(t, "admin", http.MethodPost, "/v0/user/admin/users", []byte(`{
+			"email":"new-user@example.com",
+			"display_name":"New User",
+			"role":"user",
+			"tier":"default",
+			"issue_key":true,
+			"key_label":"first"
+		}`))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+
+		var created struct {
+			APIKey string `json:"api_key"`
+			User   struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		}
+		if errDecode := json.Unmarshal(response.Body.Bytes(), &created); errDecode != nil {
+			t.Fatalf("decode create response: %v", errDecode)
+		}
+		if created.APIKey == "" {
+			t.Fatalf("create response did not contain initial API key: %s", response.Body.String())
+		}
+		keys, errList := harness.service.Store().ListAPIKeys(created.User.ID)
+		if errList != nil {
+			t.Fatalf("ListAPIKeys() error = %v", errList)
+		}
+		if len(keys) != 1 || keys[0].KeyHash != tenancy.HashAPIKey(created.APIKey) || keys[0].Label != "first" {
+			t.Fatalf("stored keys = %#v, plaintext = %q", keys, created.APIKey)
+		}
+	})
+
+	t.Run("not issued when unchecked", func(t *testing.T) {
+		response := harness.request(t, "admin", http.MethodPost, "/v0/user/admin/users", []byte(`{
+			"email":"no-key@example.com",
+			"display_name":"No Key",
+			"role":"user",
+			"tier":"default",
+			"issue_key":false
+		}`))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+
+		var created struct {
+			APIKey string `json:"api_key"`
+			User   struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		}
+		if errDecode := json.Unmarshal(response.Body.Bytes(), &created); errDecode != nil {
+			t.Fatalf("decode create response: %v", errDecode)
+		}
+		if created.APIKey != "" {
+			t.Fatalf("create response unexpectedly contained an API key: %s", response.Body.String())
+		}
+		keys, errList := harness.service.Store().ListAPIKeys(created.User.ID)
+		if errList != nil {
+			t.Fatalf("ListAPIKeys() error = %v", errList)
+		}
+		if len(keys) != 0 {
+			t.Fatalf("stored keys = %#v, want none", keys)
+		}
+	})
+}
+
 func TestTenancyDisabledLeavesUserRoutesAbsent(t *testing.T) {
 	harness := newUserTestHarness(t, false)
 	response := harness.request(t, "", http.MethodGet, "/v0/user/me", nil)
