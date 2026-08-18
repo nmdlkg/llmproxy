@@ -419,18 +419,24 @@
     renderUsers(Array.isArray(data.users) ? data.users : []);
   }
   async function createUser() {
-    $("adminIssuedKey").replaceChildren();
+    const issueKey=$("adminIssueKey").checked;
+    const issuedKeyRoot=$("adminIssuedKey");
+    issuedKeyRoot.className="";
+    issuedKeyRoot.replaceChildren();
     const data=await api("/admin/users",{method:"POST",body:JSON.stringify({
       email:$("adminEmail").value.trim(),
       display_name:$("adminDisplayName").value.trim(),
       role:$("adminRole").value,
       tier:$("adminTier").value.trim(),
       disabled:$("adminDisabled").checked,
-      issue_key:$("adminIssueKey").checked,
+      issue_key:issueKey,
       key_label:$("adminKeyLabel").value.trim()
     })});
-    if(data.api_key) showIssuedKey("adminIssuedKey",data.api_key);
     await loadPage("admin",true);
+    if(issueKey){
+      if(!data.api_key) throw new Error("User was created, but the initial API key was not returned.");
+      showIssuedKey("adminIssuedKey",data.api_key);
+    }
   }
   const pageLoaders={overview:loadProfile,credentials:loadCredentials,keys:loadKeys,usage:loadUsage,admin:loadAdmin};
   async function loadPage(name, force=false) {
