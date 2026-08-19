@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -50,8 +51,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if authType == "" {
 		authType = "unknown"
 	}
-	apiKey := strings.TrimSpace(record.APIKey)
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	userID, userTier := resolveTenant(ctx)
 	reasoningEffort := strings.TrimSpace(record.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
@@ -87,7 +88,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
 		TTFTMs:          record.TTFT.Milliseconds(),
-		Source:          record.Source,
+		Source:          sanitizeSource(record.Source, record.APIKey, authType),
 		AuthIndex:       record.AuthIndex,
 		Tokens:          tokens,
 		Failed:          failed,
@@ -106,8 +107,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Alias:               aliasName,
 		Endpoint:            resolveEndpoint(ctx),
 		AuthType:            authType,
-		APIKey:              apiKey,
 		RequestID:           requestID,
+		UserID:              userID,
+		UserTier:            userTier,
 		ReasoningEffort:     reasoningEffort,
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
@@ -116,6 +118,42 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		return
 	}
 	Enqueue(payload)
+}
+
+// resolveTenant reads the tenant already attributed to this request. It uses the
+// request context instead of hashing the API key so the queue never handles key
+// material and so a lookup cannot mutate api-key last-used bookkeeping. An
+// unattributed request yields empty values and is still published.
+// apiKeyAuthType mirrors coreauth.AuthKindAPIKey without importing that package.
+const apiKeyAuthType = "apikey"
+
+func resolveTenant(ctx context.Context) (userID string, tier string) {
+	if ctx == nil {
+		return "", ""
+	}
+	if tenant, ok := constant.TenantFromContext(ctx); ok {
+		return tenant.ID, tenant.Tier
+	}
+	return "", ""
+}
+
+// sanitizeSource keeps credential material out of the queue. resolveUsageSource
+// reports an account identifier, but for api-key credentials that identifier is
+// the key itself (Auth.AccountInfo returns the upstream key, and the attribute
+// fallback does the same), so api-key sources are dropped entirely rather than
+// only when they match the client key.
+func sanitizeSource(source string, apiKey string, authType string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(authType), apiKeyAuthType) {
+		return ""
+	}
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" && source == apiKey {
+		return ""
+	}
+	return source
 }
 
 type queuedUsageDetail struct {
@@ -128,8 +166,9 @@ type queuedUsageDetail struct {
 	Alias               string                   `json:"alias"`
 	Endpoint            string                   `json:"endpoint"`
 	AuthType            string                   `json:"auth_type"`
-	APIKey              string                   `json:"api_key"`
 	RequestID           string                   `json:"request_id"`
+	UserID              string                   `json:"user_id,omitempty"`
+	UserTier            string                   `json:"user_tier,omitempty"`
 	ReasoningEffort     string                   `json:"reasoning_effort"`
 	ServiceTier         string                   `json:"service_tier"`
 	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -304,6 +305,7 @@ func WithUser(ctx context.Context, user *User) context.Context {
 	if user == nil || strings.TrimSpace(user.ID) == "" {
 		return ctx
 	}
+	ctx = constant.WithTenant(ctx, user.ID, user.Tier)
 	return context.WithValue(ctx, userContextKey{}, user)
 }
 
