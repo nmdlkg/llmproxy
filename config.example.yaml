@@ -177,9 +177,16 @@ openrouter:
     "gpt-5.6-sol": "openai/gpt-5.6-sol"
     "gpt-5.6-luna": "openai/gpt-5.6-luna"
     "gpt-5.6-terra": "openai/gpt-5.6-terra"
-    # No catalog entry exists for the review alias; price it as the codex model
-    # it runs on.
+    "claude-opus-4-8": "anthropic/claude-opus-4.8"
+    "claude-opus-4-7": "anthropic/claude-opus-4.7"
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6"
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5"
+    # Aliases with no catalog entry of their own are priced as the model they
+    # run on. Without these the tokens are counted but never priced.
     "codex-auto-review": "openai/gpt-5.3-codex"
+    "gpt-5.3-codex-spark": "openai/gpt-5.3-codex"
+    "gpt-5.5-fast": "openai/gpt-5.5"
+    "gpt-5.4-mini-fast": "openai/gpt-5.4-mini"
   # static uses only tenancy.quota.model-price-overrides. openrouter uses
   # catalog prices first and those overrides to fill missing fields/models.
   cost-basis: "openrouter"
