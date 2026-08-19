@@ -170,12 +170,16 @@ openrouter:
     "gemini-2.5-flash": "google/gemini-2.5-flash"
     # Models this deployment actually serves. Without a mapping the catalog
     # price is unknown and costing silently falls back to the overrides below.
-    "claude-opus-5": "anthropic/claude-opus-4.1"
-    "claude-sonnet-5": "anthropic/claude-sonnet-4.5"
-    "gpt-5.6-sol": "openai/gpt-5-codex"
-    "gpt-5.6-luna": "openai/gpt-5-codex"
-    "gpt-5.6-terra": "openai/gpt-5-codex"
-    "codex-auto-review": "openai/gpt-5-codex"
+    # Every target below was verified to exist in the live catalog; a target
+    # that does not exist prices as unknown and is therefore worse than useless.
+    "claude-opus-5": "anthropic/claude-opus-5"
+    "claude-sonnet-5": "anthropic/claude-sonnet-5"
+    "gpt-5.6-sol": "openai/gpt-5.6-sol"
+    "gpt-5.6-luna": "openai/gpt-5.6-luna"
+    "gpt-5.6-terra": "openai/gpt-5.6-terra"
+    # No catalog entry exists for the review alias; price it as the codex model
+    # it runs on.
+    "codex-auto-review": "openai/gpt-5.3-codex"
   # static uses only tenancy.quota.model-price-overrides. openrouter uses
   # catalog prices first and those overrides to fill missing fields/models.
   cost-basis: "openrouter"
