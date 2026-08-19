@@ -157,7 +157,9 @@ proxy-url: ""
 # benchmark-source below have no effect, so quota falls back to
 # model-price-overrides and auto-routing keeps the configured tier order.
 openrouter:
-  enabled: false
+  # Master switch. Set together with cost-basis: openrouter below; while this is
+  # false the catalog is inert and cost-basis has no effect.
+  enabled: true
   # Required only for benchmarks. When empty, OPENROUTER_API_KEY is used.
   api-key: ""
   base-url: "https://openrouter.ai/api/v1"
@@ -166,9 +168,17 @@ openrouter:
   # unique case-insensitive/vendor-prefix/date-suffix matching.
   model-map:
     "gemini-2.5-flash": "google/gemini-2.5-flash"
+    # Models this deployment actually serves. Without a mapping the catalog
+    # price is unknown and costing silently falls back to the overrides below.
+    "claude-opus-5": "anthropic/claude-opus-4.1"
+    "claude-sonnet-5": "anthropic/claude-sonnet-4.5"
+    "gpt-5.6-sol": "openai/gpt-5-codex"
+    "gpt-5.6-luna": "openai/gpt-5-codex"
+    "gpt-5.6-terra": "openai/gpt-5-codex"
+    "codex-auto-review": "openai/gpt-5-codex"
   # static uses only tenancy.quota.model-price-overrides. openrouter uses
   # catalog prices first and those overrides to fill missing fields/models.
-  cost-basis: "static"
+  cost-basis: "openrouter"
   # Empty disables benchmark ranking. Other values: artificial-analysis, design-arena.
   benchmark-source: ""
 
@@ -255,8 +265,9 @@ tenancy:
         default: 5.0
     # Required token prices in the industry-standard $ per 1M tokens.
     # Under static cost-basis these are the only prices. Under openrouter they
-    # fill catalog gaps. Keep "*" as a non-zero last-resort floor so unmatched
-    # local models never become silently free; add exact entries where known.
+    # fill catalog gaps only: a catalog price that is present and explicitly
+    # zero still wins, so "*" is a fallback for UNPRICED models, not a floor
+    # that overrides a published zero. Add exact entries where known.
     model-price-overrides:
       "*":
         prompt: 0.075
