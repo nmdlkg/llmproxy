@@ -118,6 +118,54 @@ func LimitFor(user User, credentials []Credential, cfg config.TenancyQuota) int6
 	return limit
 }
 
+// LimitComposition explains how a user's limit was derived so the user panel can
+// show the base allowance separately from contributed credential allowances.
+type LimitComposition struct {
+	// TotalNanoUSD is the effective limit.
+	TotalNanoUSD int64
+	// BaseNanoUSD is the tier base allowance.
+	BaseNanoUSD int64
+	// ContributionNanoUSD is the summed allowance from the user's shared credentials.
+	ContributionNanoUSD int64
+	// ContributingCredentials counts the user's credentials that added allowance.
+	ContributingCredentials int
+}
+
+// Composition returns the limit breakdown for a user. Only the requesting user's
+// own credentials contribute, so no shared-pool credential identity is exposed.
+func (q *Quota) Composition(userID string) (LimitComposition, error) {
+	user, errUser := q.store.GetUser(userID)
+	if errUser != nil {
+		return LimitComposition{}, fmt.Errorf("tenancy quota: get user: %w", errUser)
+	}
+	var credentials []Credential
+	if q.credentials != nil {
+		var errCredentials error
+		credentials, errCredentials = q.credentials(userID)
+		if errCredentials != nil {
+			return LimitComposition{}, fmt.Errorf("tenancy quota: resolve credentials: %w", errCredentials)
+		}
+	}
+	total := LimitFor(*user, credentials, q.cfg)
+	base := LimitFor(*user, nil, q.cfg)
+	contribution := total - base
+	if contribution < 0 {
+		contribution = 0
+	}
+	contributing := 0
+	for _, credential := range credentials {
+		if LimitFor(*user, []Credential{credential}, q.cfg) > base {
+			contributing++
+		}
+	}
+	return LimitComposition{
+		TotalNanoUSD:            total,
+		BaseNanoUSD:             base,
+		ContributionNanoUSD:     contribution,
+		ContributingCredentials: contributing,
+	}, nil
+}
+
 // Limit returns the current quota limit for a user.
 func (q *Quota) Limit(userID string) (int64, error) {
 	snapshot, errLoad := q.load(userID)
