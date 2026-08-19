@@ -92,9 +92,9 @@ func TestHandleUsageEmitsOnlyAllowedAttributes(t *testing.T) {
 
 	metrics := collectMetrics(t, reader)
 	expectedKeys := map[string][]string{
-		"llmproxy.token.usage":      {"model", "provider", "token_type", "user_email"},
-		"llmproxy.request.count":    {"failed", "model", "status_class", "user_email"},
-		"llmproxy.request.duration": {"model", "user_email"},
+		"llmproxy.token.usage":      {"harness", "model", "provider", "token_type", "user_email"},
+		"llmproxy.request.count":    {"failed", "harness", "model", "status_class", "user_email"},
+		"llmproxy.request.duration": {"harness", "model", "user_email"},
 	}
 	forbidden := map[string]struct{}{
 		"auth_id":    {},
