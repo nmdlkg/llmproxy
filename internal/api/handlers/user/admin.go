@@ -3,7 +3,9 @@ package user
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
@@ -149,4 +151,71 @@ func userResponse(user *tenancy.User) gin.H {
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
+}
+
+// ListUsageByUser reports per-user consumption for the current quota window.
+// It exposes aggregates only: no credential identifiers and no request rows.
+func (h *Handler) ListUsageByUser(c *gin.Context) {
+	ctx := c.Request.Context()
+	users, errUsers := h.store().ListUsers()
+	if errUsers != nil {
+		log.WithError(errUsers).Error("admin usage: list users")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
+		return
+	}
+	window := quotaWindow(h.cfg)
+	until := time.Now().UTC()
+	since := until.Add(-window)
+	stats, errStats := h.store().UsageByUser(ctx, since, until)
+	if errStats != nil {
+		log.WithError(errStats).Error("admin usage: aggregate usage")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
+		return
+	}
+	byUser := make(map[string]tenancy.UsageUserStat, len(stats))
+	for _, stat := range stats {
+		byUser[stat.UserID] = stat
+	}
+	// Start from the user list so users with no usage still appear.
+	items := make([]gin.H, 0, len(users))
+	for _, user := range users {
+		stat := byUser[user.ID]
+		item := gin.H{
+			"id":              user.ID,
+			"email":           user.Email,
+			"tier":            user.Tier,
+			"role":            user.Role,
+			"disabled":        user.Disabled,
+			"used":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
+			"input_tokens":    stat.InputTokens,
+			"output_tokens":   stat.OutputTokens,
+			"attempts":        stat.Attempts,
+			"failed_attempts": stat.FailedAttempts,
+		}
+		if h.service != nil && h.service.Quota() != nil {
+			if limit, errLimit := h.service.Quota().Limit(user.ID); errLimit == nil {
+				item["limit"] = tenancy.FormatNanoUSD(limit)
+				if limit > 0 {
+					item["utilization"] = float64(stat.CostNanoUSD) / float64(limit)
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(first, second int) bool {
+		return usageUtilization(items[first]) > usageUtilization(items[second])
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"window":       window.String(),
+		"window_start": since,
+		"users":        items,
+	})
+}
+
+// usageUtilization reads the optional utilization value for admin sorting.
+func usageUtilization(item gin.H) float64 {
+	if value, ok := item["utilization"].(float64); ok {
+		return value
+	}
+	return 0
 }
