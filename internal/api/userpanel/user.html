@@ -39,6 +39,11 @@
     th,td { padding:9px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle }
     th { color:#cbd6e6; font-size:13px; font-weight:600 } td input[type="text"] { min-width:110px }
     .admin-actions { min-width:170px }
+    table.fixed { table-layout:fixed } th.num,td.num { text-align:right; font-variant-numeric:tabular-nums }
+    .bar { height:8px; border-radius:999px; background:#0b1320; border:1px solid var(--line); overflow:hidden; margin-top:8px }
+    .bar > span { display:block; height:100%; background:var(--accent) }
+    .bar.warn > span { background:#e2b341 } .bar.over > span { background:var(--danger) }
+    details.composition { margin-top:12px } details.composition summary { cursor:pointer; color:#cbd6e6 }
     [hidden] { display:none !important }
     @media(max-width:700px){
       header{align-items:stretch;flex-direction:column}
@@ -139,6 +144,7 @@
           <div id="adminIssuedKey"></div>
         </div>
         <div id="adminUsers" class="card"></div>
+        <div id="adminUsage"></div>
       </section>
     </div>
   </div>
@@ -178,6 +184,66 @@
     node.textContent=textValue(text);
     return node;
   };
+  const numberValue = value => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const numberText = value => numberValue(value).toLocaleString();
+  // usdValue parses the formatted USD strings returned by the tenancy API so the
+  // progress bar can be derived without a second numeric field.
+  const usdValue = value => {
+    const parsed = Number(String(value == null ? "" : value).replace(/[^0-9.\-]/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  function buildTable(columns, rows) {
+    const wrap=document.createElement("div"); wrap.className="table-wrap";
+    const table=document.createElement("table"); table.className="fixed";
+    const head=document.createElement("thead"); const headRow=document.createElement("tr");
+    for(const column of columns){
+      const cell=textNode("th",column.numeric?"num":null,column.label);
+      if(column.width) cell.style.width=column.width;
+      headRow.append(cell);
+    }
+    head.append(headRow);
+    const body=document.createElement("tbody");
+    for(const row of rows){
+      const bodyRow=document.createElement("tr");
+      for(const column of columns){
+        bodyRow.append(textNode("td",column.numeric?"num":null,column.value(row)));
+      }
+      body.append(bodyRow);
+    }
+    table.append(head,body);
+    wrap.append(table);
+    return wrap;
+  }
+  // quotaBar renders consumption against the limit. A missing or zero limit
+  // yields no bar rather than a divide-by-zero.
+  function quotaBar(quota) {
+    const limit=usdValue(quota.limit);
+    if(limit<=0) return null;
+    const ratio=usdValue(quota.used)/limit;
+    const bar=document.createElement("div"); bar.className="bar";
+    if(ratio>=1) bar.className="bar over"; else if(ratio>=0.8) bar.className="bar warn";
+    const fill=document.createElement("span");
+    fill.style.width=Math.min(100,Math.max(0,ratio*100)).toFixed(1) + "%";
+    bar.append(fill);
+    return bar;
+  }
+  function compositionNodes(composition) {
+    if(!composition) return null;
+    const details=document.createElement("details"); details.className="composition";
+    details.append(textNode("summary",null,"How this limit is composed"));
+    details.append(buildTable([
+      {label:"Component",value:row=>row[0],width:"55%"},
+      {label:"Allowance",value:row=>row[1],numeric:true,width:"45%"},
+    ],[
+      ["Tier base",textValue(composition.base)],
+      ["Shared credential contribution",textValue(composition.contribution)],
+      ["Contributing credentials",numberText(composition.contributing_credentials)],
+    ]));
+    return details;
+  }
   function quotaNodes(quota) {
     const q=quota || {};
     const root=document.createElement("div");
@@ -189,6 +255,8 @@
     }
     const reset=textNode("div","muted","Remaining " + textValue(q.remaining) + " · resets " + formatDate(q.reset_at));
     root.append(row,reset);
+    const bar=quotaBar(q);
+    if(bar) root.append(bar);
     return root;
   }
   function displayPage(name) {
@@ -204,12 +272,70 @@
     const detail=textNode("div","muted",textValue(data.email) + " · " + textValue(data.role));
     const separator=document.createElement("hr"); separator.style.cssText="border:0;border-top:1px solid var(--line);margin:14px 0";
     root.append(row,detail,separator,quotaNodes(data.quota));
+    const composition=compositionNodes((data.quota || {}).composition);
+    if(composition) root.append(composition);
     $("adminNav").hidden=data.role !== "admin";
     if (data.role !== "admin" && activePage === "admin") displayPage("overview");
   }
   async function loadUsage() {
     const data = await api("/usage");
     const root=$("usage"); root.replaceChildren(quotaNodes(data.usage));
+    const totals=data.totals || {};
+    // Attempts count upstream provider attempts, including scheduler retries, so
+    // they are deliberately not labelled as requests.
+    root.append(textNode("div","muted",
+      "Attempts " + numberText(totals.attempts) + " · failed " + numberText(totals.failed_attempts)));
+
+    const models=Array.isArray(data.models) ? data.models : [];
+    root.append(textNode("h3",null,"By model"));
+    if(models.length===0){
+      root.append(textNode("div","muted","No usage recorded in this window."));
+    } else {
+      root.append(buildTable([
+        {label:"Provider",value:row=>textValue(row.provider),width:"14%"},
+        {label:"Model",value:row=>textValue(row.model),width:"26%"},
+        {label:"Cost",value:row=>textValue(row.cost),numeric:true,width:"14%"},
+        {label:"Input",value:row=>numberText(row.input_tokens),numeric:true,width:"12%"},
+        {label:"Output",value:row=>numberText(row.output_tokens),numeric:true,width:"12%"},
+        {label:"Attempts",value:row=>numberText(row.attempts),numeric:true,width:"11%"},
+        {label:"Failed",value:row=>numberText(row.failed_attempts),numeric:true,width:"11%"},
+      ],models));
+    }
+
+    const daily=Array.isArray(data.daily) ? data.daily : [];
+    root.append(textNode("h3",null,"Daily trend"));
+    if(daily.length===0){
+      root.append(textNode("div","muted","No daily usage in this window."));
+    } else {
+      root.append(buildTable([
+        {label:"Day",value:row=>textValue(row.day),width:"22%"},
+        {label:"Cost",value:row=>textValue(row.cost),numeric:true,width:"20%"},
+        {label:"Input",value:row=>numberText(row.input_tokens),numeric:true,width:"16%"},
+        {label:"Output",value:row=>numberText(row.output_tokens),numeric:true,width:"16%"},
+        {label:"Attempts",value:row=>numberText(row.attempts),numeric:true,width:"13%"},
+        {label:"Failed",value:row=>numberText(row.failed_attempts),numeric:true,width:"13%"},
+      ],daily));
+    }
+  }
+
+  function renderAdminUsage(payload) {
+    const root=$("adminUsage"); root.replaceChildren();
+    const users=Array.isArray(payload.users) ? payload.users : [];
+    root.append(textNode("h3",null,"Usage by user"));
+    if(users.length===0){
+      root.append(textNode("div","muted","No users to report."));
+      return;
+    }
+    root.append(textNode("div","muted","Window " + textValue(payload.window)));
+    root.append(buildTable([
+      {label:"Email",value:row=>textValue(row.email),width:"26%"},
+      {label:"Tier",value:row=>textValue(row.tier),width:"12%"},
+      {label:"Used",value:row=>textValue(row.used),numeric:true,width:"14%"},
+      {label:"Limit",value:row=>row.limit==null?"—":textValue(row.limit),numeric:true,width:"14%"},
+      {label:"Utilization",value:row=>row.utilization==null?"—":(numberValue(row.utilization)*100).toFixed(1) + "%",numeric:true,width:"14%"},
+      {label:"Attempts",value:row=>numberText(row.attempts),numeric:true,width:"10%"},
+      {label:"Failed",value:row=>numberText(row.failed_attempts),numeric:true,width:"10%"},
+    ],users));
   }
   async function loadCredentials() {
     const data = await api("/credentials");
@@ -417,6 +543,7 @@
   async function loadAdmin() {
     const data=await api("/admin/users");
     renderUsers(Array.isArray(data.users) ? data.users : []);
+    renderAdminUsage(await api("/admin/usage"));
   }
   async function createUser() {
     const issueKey=$("adminIssueKey").checked;
