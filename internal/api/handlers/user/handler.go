@@ -93,6 +93,7 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine, authMiddleware gin.HandlerF
 			admin.POST("/users", h.CreateUser)
 			admin.PATCH("/users/:id", h.UpdateUser)
 			admin.DELETE("/users/:id", h.DeleteUser)
+			admin.GET("/usage", h.ListUsageByUser)
 		}
 	}
 }

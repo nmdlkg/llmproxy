@@ -33,13 +33,63 @@ func (h *Handler) GetMe(c *gin.Context) {
 
 func (h *Handler) GetUsage(c *gin.Context) {
 	user, _ := currentUser(c)
-	quota, errQuota := h.quotaResponse(c.Request.Context(), user.ID)
+	ctx := c.Request.Context()
+	quota, errQuota := h.quotaResponse(ctx, user.ID)
 	if errQuota != nil {
 		log.WithError(errQuota).WithField("user_id", user.ID).Error("user usage: load rollup")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"usage": quota})
+	window := quotaWindow(h.cfg)
+	until := time.Now().UTC()
+	since := until.Add(-window)
+	models, errModels := h.store().UsageByModel(ctx, user.ID, since, until)
+	if errModels != nil {
+		log.WithError(errModels).WithField("user_id", user.ID).Error("user usage: load model breakdown")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
+		return
+	}
+	days, errDays := h.store().UsageByDay(ctx, user.ID, since, until)
+	if errDays != nil {
+		log.WithError(errDays).WithField("user_id", user.ID).Error("user usage: load daily trend")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
+		return
+	}
+	modelItems := make([]gin.H, 0, len(models))
+	var attempts, failedAttempts int64
+	for _, stat := range models {
+		attempts += stat.Attempts
+		failedAttempts += stat.FailedAttempts
+		modelItems = append(modelItems, gin.H{
+			"provider":        stat.Provider,
+			"model":           stat.Model,
+			"cost":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
+			"input_tokens":    stat.InputTokens,
+			"output_tokens":   stat.OutputTokens,
+			"attempts":        stat.Attempts,
+			"failed_attempts": stat.FailedAttempts,
+		})
+	}
+	dailyItems := make([]gin.H, 0, len(days))
+	for _, stat := range days {
+		dailyItems = append(dailyItems, gin.H{
+			"day":             stat.Day.Format("2006-01-02"),
+			"cost":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
+			"input_tokens":    stat.InputTokens,
+			"output_tokens":   stat.OutputTokens,
+			"attempts":        stat.Attempts,
+			"failed_attempts": stat.FailedAttempts,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"usage":  quota,
+		"models": modelItems,
+		"daily":  dailyItems,
+		"totals": gin.H{
+			"attempts":        attempts,
+			"failed_attempts": failedAttempts,
+		},
+	})
 }
 
 func (h *Handler) ListAPIKeys(c *gin.Context) {
@@ -150,14 +200,25 @@ func (h *Handler) quotaResponse(ctx context.Context, userID string) (gin.H, erro
 	if remaining < 0 {
 		remaining = 0
 	}
-	return gin.H{
+	response := gin.H{
 		"limit":        tenancy.FormatNanoUSD(limit),
 		"used":         tenancy.FormatNanoUSD(used),
 		"remaining":    tenancy.FormatNanoUSD(remaining),
 		"window":       window.String(),
 		"window_start": since,
 		"reset_at":     resetAt,
-	}, nil
+	}
+	if composition, errComposition := h.service.Quota().Composition(userID); errComposition == nil {
+		response["composition"] = gin.H{
+			"base":                     tenancy.FormatNanoUSD(composition.BaseNanoUSD),
+			"contribution":             tenancy.FormatNanoUSD(composition.ContributionNanoUSD),
+			"contributing_credentials": composition.ContributingCredentials,
+		}
+	} else {
+		log.WithError(errComposition).WithField("user_id", userID).
+			Warn("user quota: limit composition unavailable")
+	}
+	return response, nil
 }
 
 func quotaWindow(cfg *config.Config) time.Duration {
