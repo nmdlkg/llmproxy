@@ -186,6 +186,8 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			ON usage_ledger(user_id, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_ledger_auth_provider_time
 			ON usage_ledger(auth_id, provider, occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_ledger_time
+			ON usage_ledger(occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_api_keys_user
 			ON user_api_keys(user_id)`,
 	}
@@ -283,6 +285,156 @@ func (s *SQLiteStore) OldestUserUsage(ctx context.Context, userID string, since 
 		userID,
 		timeValue(since),
 	)
+}
+
+// UsageByModel aggregates one user's ledger rows per provider/model over
+// [since, until). Attempts counts upstream attempts, not logical requests.
+func (s *SQLiteStore) UsageByModel(ctx context.Context, userID string, since, until time.Time) ([]UsageModelStat, error) {
+	rows, errQuery := s.db.QueryContext(
+		ctx,
+		`SELECT provider, model,
+		        COALESCE(SUM(cost_nano_usd), 0),
+		        COALESCE(SUM(input_tokens), 0),
+		        COALESCE(SUM(output_tokens), 0),
+		        COUNT(*),
+		        COALESCE(SUM(failed), 0)
+		 FROM usage_ledger
+		 WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
+		 GROUP BY provider, model
+		 ORDER BY 3 DESC`,
+		userID,
+		timeValue(since),
+		timeValue(until),
+	)
+	if errQuery != nil {
+		return nil, fmt.Errorf("tenancy sqlite: usage by model: %w", errQuery)
+	}
+	defer func() {
+		if errClose := rows.Close(); errClose != nil {
+			log.WithError(errClose).Debug("tenancy sqlite: close usage by model rows")
+		}
+	}()
+	stats := make([]UsageModelStat, 0, 8)
+	for rows.Next() {
+		var stat UsageModelStat
+		if errScan := rows.Scan(
+			&stat.Provider,
+			&stat.Model,
+			&stat.CostNanoUSD,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.Attempts,
+			&stat.FailedAttempts,
+		); errScan != nil {
+			return nil, fmt.Errorf("tenancy sqlite: scan usage by model: %w", errScan)
+		}
+		stats = append(stats, stat)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("tenancy sqlite: iterate usage by model: %w", errRows)
+	}
+	return stats, nil
+}
+
+// UsageByDay aggregates one user's ledger rows into UTC day buckets over
+// [since, until). Buckets are computed from the stored UnixNano values so the
+// range index on (user_id, occurred_at) stays usable.
+func (s *SQLiteStore) UsageByDay(ctx context.Context, userID string, since, until time.Time) ([]UsageDailyStat, error) {
+	const nanosPerDay = int64(24 * time.Hour)
+	rows, errQuery := s.db.QueryContext(
+		ctx,
+		`SELECT (occurred_at / ?) * ? AS day_start,
+		        COALESCE(SUM(cost_nano_usd), 0),
+		        COALESCE(SUM(input_tokens), 0),
+		        COALESCE(SUM(output_tokens), 0),
+		        COUNT(*),
+		        COALESCE(SUM(failed), 0)
+		 FROM usage_ledger
+		 WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
+		 GROUP BY day_start
+		 ORDER BY day_start ASC`,
+		nanosPerDay,
+		nanosPerDay,
+		userID,
+		timeValue(since),
+		timeValue(until),
+	)
+	if errQuery != nil {
+		return nil, fmt.Errorf("tenancy sqlite: usage by day: %w", errQuery)
+	}
+	defer func() {
+		if errClose := rows.Close(); errClose != nil {
+			log.WithError(errClose).Debug("tenancy sqlite: close usage by day rows")
+		}
+	}()
+	stats := make([]UsageDailyStat, 0, 8)
+	for rows.Next() {
+		var dayStart int64
+		var stat UsageDailyStat
+		if errScan := rows.Scan(
+			&dayStart,
+			&stat.CostNanoUSD,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.Attempts,
+			&stat.FailedAttempts,
+		); errScan != nil {
+			return nil, fmt.Errorf("tenancy sqlite: scan usage by day: %w", errScan)
+		}
+		stat.Day = timeFromValue(dayStart)
+		stats = append(stats, stat)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("tenancy sqlite: iterate usage by day: %w", errRows)
+	}
+	return stats, nil
+}
+
+// UsageByUser aggregates every user's ledger rows over [since, until) for admin
+// views. It returns ledger-backed users only; callers that need users with no
+// usage join against ListUsers.
+func (s *SQLiteStore) UsageByUser(ctx context.Context, since, until time.Time) ([]UsageUserStat, error) {
+	rows, errQuery := s.db.QueryContext(
+		ctx,
+		`SELECT user_id,
+		        COALESCE(SUM(cost_nano_usd), 0),
+		        COALESCE(SUM(input_tokens), 0),
+		        COALESCE(SUM(output_tokens), 0),
+		        COUNT(*),
+		        COALESCE(SUM(failed), 0)
+		 FROM usage_ledger
+		 WHERE occurred_at >= ? AND occurred_at < ?
+		 GROUP BY user_id`,
+		timeValue(since),
+		timeValue(until),
+	)
+	if errQuery != nil {
+		return nil, fmt.Errorf("tenancy sqlite: usage by user: %w", errQuery)
+	}
+	defer func() {
+		if errClose := rows.Close(); errClose != nil {
+			log.WithError(errClose).Debug("tenancy sqlite: close usage by user rows")
+		}
+	}()
+	stats := make([]UsageUserStat, 0, 8)
+	for rows.Next() {
+		var stat UsageUserStat
+		if errScan := rows.Scan(
+			&stat.UserID,
+			&stat.CostNanoUSD,
+			&stat.InputTokens,
+			&stat.OutputTokens,
+			&stat.Attempts,
+			&stat.FailedAttempts,
+		); errScan != nil {
+			return nil, fmt.Errorf("tenancy sqlite: scan usage by user: %w", errScan)
+		}
+		stats = append(stats, stat)
+	}
+	if errRows := rows.Err(); errRows != nil {
+		return nil, fmt.Errorf("tenancy sqlite: iterate usage by user: %w", errRows)
+	}
+	return stats, nil
 }
 
 // EarliestAuthUsage returns the earliest auth/provider ledger row within the interval.
