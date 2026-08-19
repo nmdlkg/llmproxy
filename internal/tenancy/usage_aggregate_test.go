@@ -86,6 +86,28 @@ func TestUsageByDayBucketsIntoUTCDays(t *testing.T) {
 	}
 }
 
+func TestUsageByDayBucketsPreEpochTimestampByUTCDate(t *testing.T) {
+	store := newTestStore(t)
+	occurredAt := time.Date(1969, 12, 31, 23, 30, 0, 0, time.UTC)
+	if errAppend := store.AppendUsage(context.Background(), []UsageEntry{{
+		UserID: "pre-epoch", AuthID: "auth", Provider: "codex", Model: "gpt-5.6",
+		OccurredAt: occurredAt,
+	}}); errAppend != nil {
+		t.Fatalf("AppendUsage() error = %v", errAppend)
+	}
+	stats, errStats := store.UsageByDay(context.Background(), "pre-epoch", occurredAt.Add(-time.Hour), occurredAt.Add(time.Hour))
+	if errStats != nil {
+		t.Fatalf("UsageByDay() error = %v", errStats)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("UsageByDay() returned %d rows, want 1", len(stats))
+	}
+	want := time.Date(1969, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !stats[0].Day.Equal(want) {
+		t.Errorf("pre-epoch bucket = %v, want %v", stats[0].Day, want)
+	}
+}
+
 func TestUsageByDayExcludesRowsOutsideRange(t *testing.T) {
 	store := newTestStore(t)
 	base := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)

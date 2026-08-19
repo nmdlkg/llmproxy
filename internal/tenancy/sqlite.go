@@ -343,7 +343,7 @@ func (s *SQLiteStore) UsageByDay(ctx context.Context, userID string, since, unti
 	const nanosPerDay = int64(24 * time.Hour)
 	rows, errQuery := s.db.QueryContext(
 		ctx,
-		`SELECT (occurred_at / ?) * ? AS day_start,
+		`SELECT ((occurred_at / ?) - (occurred_at < 0 AND occurred_at % ? != 0)) * ? AS day_start,
 		        COALESCE(SUM(cost_nano_usd), 0),
 		        COALESCE(SUM(input_tokens), 0),
 		        COALESCE(SUM(output_tokens), 0),
@@ -353,6 +353,7 @@ func (s *SQLiteStore) UsageByDay(ctx context.Context, userID string, since, unti
 		 WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ?
 		 GROUP BY day_start
 		 ORDER BY day_start ASC`,
+		nanosPerDay,
 		nanosPerDay,
 		nanosPerDay,
 		userID,
