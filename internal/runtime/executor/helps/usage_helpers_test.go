@@ -8,8 +8,57 @@ import (
 	"testing"
 	"time"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
+
+func TestResolveUsageSourceClassifiesProvenance(t *testing.T) {
+	tests := []struct {
+		name       string
+		auth       *cliproxyauth.Auth
+		wantSource string
+		wantKind   usage.SourceProvenance
+	}{
+		{name: "oauth api key attribute", auth: &cliproxyauth.Auth{
+			Attributes: map[string]string{
+				cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+				cliproxyauth.AttributeAPIKey:   "upstream-secret",
+			},
+		}, wantSource: "upstream-secret", wantKind: usage.SourceProvenanceSecret},
+		{name: "vertex project", auth: &cliproxyauth.Auth{
+			Provider: "vertex", Metadata: map[string]any{"project_id": "project-123"},
+		}, wantSource: "project-123", wantKind: usage.SourceProvenanceIdentifier},
+		{name: "oauth email", auth: &cliproxyauth.Auth{
+			Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth},
+			Metadata:   map[string]any{"email": "user@example.com"},
+		}, wantSource: "user@example.com", wantKind: usage.SourceProvenanceIdentifier},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSource, gotKind := resolveUsageSource(tt.auth, "")
+			if gotSource != tt.wantSource || gotKind != tt.wantKind {
+				t.Fatalf("resolveUsageSource() = (%q, %q), want (%q, %q)", gotSource, gotKind, tt.wantSource, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestNewUsageReporterCarriesSourceProvenance(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
+			cliproxyauth.AttributeAPIKey:   "upstream-secret",
+		},
+	}
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", auth)
+	record := reporter.buildRecord(usage.Detail{}, false, usage.Failure{})
+	if record.Source != "upstream-secret" {
+		t.Fatalf("record source = %q, want upstream-secret", record.Source)
+	}
+	if record.SourceProvenance != usage.SourceProvenanceSecret {
+		t.Fatalf("record source provenance = %q, want secret", record.SourceProvenance)
+	}
+}
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)

@@ -88,7 +88,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
 		TTFTMs:          record.TTFT.Milliseconds(),
-		Source:          sanitizeSource(record.Source, record.APIKey, authType),
+		Source:          sanitizeSource(record.Source, record.SourceProvenance),
 		AuthIndex:       record.AuthIndex,
 		Tokens:          tokens,
 		Failed:          failed,
@@ -124,9 +124,6 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 // request context instead of hashing the API key so the queue never handles key
 // material and so a lookup cannot mutate api-key last-used bookkeeping. An
 // unattributed request yields empty values and is still published.
-// apiKeyAuthType mirrors coreauth.AuthKindAPIKey without importing that package.
-const apiKeyAuthType = "apikey"
-
 func resolveTenant(ctx context.Context) (userID string, tier string) {
 	if ctx == nil {
 		return "", ""
@@ -137,20 +134,10 @@ func resolveTenant(ctx context.Context) (userID string, tier string) {
 	return "", ""
 }
 
-// sanitizeSource keeps credential material out of the queue. resolveUsageSource
-// reports an account identifier, but for api-key credentials that identifier is
-// the key itself (Auth.AccountInfo returns the upstream key, and the attribute
-// fallback does the same), so api-key sources are dropped entirely rather than
-// only when they match the client key.
-func sanitizeSource(source string, apiKey string, authType string) string {
+// sanitizeSource publishes only producer-confirmed non-secret attribution.
+func sanitizeSource(source string, provenance coreusage.SourceProvenance) string {
 	source = strings.TrimSpace(source)
-	if source == "" {
-		return ""
-	}
-	if strings.EqualFold(strings.TrimSpace(authType), apiKeyAuthType) {
-		return ""
-	}
-	if apiKey = strings.TrimSpace(apiKey); apiKey != "" && source == apiKey {
+	if source == "" || provenance != coreusage.SourceProvenanceIdentifier {
 		return ""
 	}
 	return source
