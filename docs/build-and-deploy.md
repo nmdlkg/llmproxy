@@ -16,67 +16,139 @@ The binary and service data are owned by `nobody:nogroup` and only executed by
 the service user, so preserve that ownership on install rather than inventing
 a new one.
 
-## 1. Build
+## 1. Install the staging and rollback tooling once
 
-The default caches are writable on this host, so no environment overrides are
-needed.
+The reference deployment uses systemd; no container orchestrator or traffic
+splitting is required. The rollout controller stages the new executable and
+plugin, promotes the same files, and observes production for three minutes.
+Production still restarts during promotion, so active SSE/WebSocket connections
+may disconnect. This is not a zero-downtime deployment.
 
-~~~bash
-cd /home/minis/workspace/llmproxy
-git status --short
-/usr/local/go/bin/go build -trimpath -o /tmp/cliproxyapi-new ./cmd/server
-~~~
-
-Stamp the build so a deployed binary can be identified later. Without this the
-binary reports `dev / none / unknown`, which makes it impossible to tell which
-build is running.
+Requirements: Python 3.11+, `python3-yaml`, systemd, a CGO-enabled Go 1.26+
+toolchain, and a C compiler. Run installation from a normal operator shell:
 
 ~~~bash
 cd /home/minis/workspace/llmproxy
-/usr/local/go/bin/go build -trimpath \
-  -ldflags "-X main.Version=$(git rev-parse --abbrev-ref HEAD) \
-            -X main.Commit=$(git rev-parse --short HEAD) \
-            -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o /tmp/cliproxyapi-new ./cmd/server
-
-/tmp/cliproxyapi-new --help | head -1
+sudo bash deploy/safe-rollout/install.sh
 ~~~
 
-The ldflags target `main`, not `internal/buildinfo`. `cmd/server/main.go`
-copies its own package variables into `buildinfo` at startup, so stamping
-`buildinfo` directly is silently overwritten.
+Installation captures the currently deployed binary, configuration, and plugin
+directory as a baseline under `/opt/cliproxyapi/releases`. It installs:
 
-## 2. Verify before installing
+- `cliproxyapi-stage@.service`: isolated staging, `nobody:nogroup`, private network.
+- `cliproxyapi-deploy@.service`: terminal-independent promotion and monitoring.
+- `cliproxyapi-deploy-recover.service`: recovery if the deployment worker fails.
+- `cliproxyapi-deploy-boot.service`: interrupted-deployment recovery before proxy startup.
+
+Installation does not restart production. The scripts target the documented
+reference paths, service identity, and `/var/lib/cliproxyapi` working directory.
+Review those constants before reusing on another host. Relative plugin paths are
+resolved against that working directory; use an absolute path for `plugins.dir`
+when migrating from a tilde-based setting.
+
+The installer creates root-only monitoring settings at
+`/var/lib/cliproxy-deploy/settings.json`. It uses the first configured service API
+key for authenticated model-list checks without printing it. If there are no
+service API keys, provision a valid production key in the configured `key_file`
+(mode 600) before promotion. Check the URL, especially with TLS or a Tailscale-only
+listener. TLS verification is enabled; configure a trusted certificate/hostname.
+
+Release files are root-owned and readable by the service group; live service
+configuration retains `nobody:nogroup` ownership. This prevents the staging
+process from rewriting release artifacts or deployment approval records.
+
+## 2. Build and stage
+
+Commit the worktree first. The build script refuses dirty source, runs formatting
+checks, all root Go tests, rollout failure tests, and the nested scheduler module's
+tests, then builds a version-stamped server and native scheduler plugin:
 
 ~~~bash
 cd /home/minis/workspace/llmproxy
-/usr/local/go/bin/gofmt -l .
-/usr/local/go/bin/go test ./...
+GOCACHE=/tmp/gocache GOPROXY=off bash deploy/safe-rollout/build.sh
 ~~~
 
-`gofmt -l` must print nothing. For a change that touches a fork seam, also run
-the focused detection commands in [fork-patches.md](fork-patches.md); a clean
-build does not prove a seam survived.
+The printed bundle is `/tmp/cliproxy-bundles/<timestamp>-<commit>`. Its manifest
+binds the executable and plugin checksums. The ldflags target `main.Version`,
+`main.Commit`, and `main.BuildDate`; the entrypoint copies them into `buildinfo`.
+For a fork seam change, also run the focused commands in
+[fork-patches.md](fork-patches.md).
 
-## 3. Install and restart
-
-Back up the current binary first and keep it until the new one is accepted.
+Import and stage the bundle, substituting its exact path:
 
 ~~~bash
-sudo cp -a /opt/cliproxyapi/bin/cliproxyapi \
-  /opt/cliproxyapi/bin/cliproxyapi.before-$(date +%F)
-sudo install -o nobody -g nogroup -m 755 \
-  /tmp/cliproxyapi-new /opt/cliproxyapi/bin/cliproxyapi
-sudo systemctl restart cliproxyapi.service
-sudo systemctl is-active cliproxyapi.service
+sudo python3 /usr/local/lib/cliproxy-deploy/rollout.py stage /tmp/cliproxy-bundles/<release>
+sudo journalctl -u cliproxyapi-stage@<release>.service --no-pager
 ~~~
 
-Confirm the running build is the one you just installed, then watch startup for
-credential, catalog, or telemetry errors.
+Staging uses the new real proxy with a local mock OpenAI-compatible upstream.
+It verifies the native sharing plugin ABI, `/healthz`, authenticated `/v1/models`,
+a normal completion, and SSE through the real server. It has an independent auth
+directory and SQLite DB, no inherited production environment, and no external
+network access. Production configuration, credentials, and release snapshots are
+inaccessible inside the staging service. Only executable artifacts are copied in.
+
+This is a deterministic smoke gate, not full production parity. It does not prove
+real OAuth refresh, provider availability, every tenant UI workflow, or unrelated
+plugins. A dedicated real test account can be added in a separate integration
+stage later; never run a copied production OAuth identity concurrently. Staging
+currently exercises the tenancy scheduler; other pre-existing plugins are
+preserved for production but are not exercised by the mock test.
+
+A failed stage leaves production untouched and does not create a promotion
+approval. Use a new bundle ID after fixing a failed stage. Promotion rejects
+changed release files or a production config changed since staging.
+
+## 3. Promote and observe
+
+Only promote changes whose database writes/schema remain readable by the previous
+version. The controller does not establish migration compatibility automatically.
+The current additive API-key column/table migrations should still be checked
+against the specific deployed version. Back up SQLite with a consistent SQLite
+backup mechanism before a schema change; copying a live `.db` file alone is not
+sufficient. A destructive/incompatible migration needs a separate maintenance plan.
+
+Start the worker through systemd, so closing the terminal cannot cancel monitoring:
 
 ~~~bash
-journalctl -u cliproxyapi.service -n 40 --no-pager | grep -i 'version\|error\|warn'
+sudo systemctl start --no-block cliproxyapi-deploy@<release>.service
+sudo journalctl -fu cliproxyapi-deploy@<release>.service
 ~~~
+
+Before stopping production, the worker checks its current executable hash,
+`/healthz`, and authenticated model listing. It snapshots the immediately previous
+binary/config/plugins, writes a durable pending record, stops the service, installs
+the candidate configuration and executable link, and starts the service again.
+The config watcher therefore cannot observe a half-switched running release.
+
+For 180 seconds (configurable from 30 to 300), it checks the running executable,
+process state, restart count, health JSON, and a nonempty authenticated model list.
+Three consecutive failed checks trigger one rollback attempt. Upstream 429/5xx
+responses are not automatic rollback triggers. These checks detect startup and
+local API regressions, not every possible inference or policy failure.
+
+On acceptance, the worker records the current release and clears pending state.
+On failure, it restores the previous binary, plugin paths, and configuration,
+restarts, and checks recovery. A killed/timed-out worker invokes recovery through
+`OnFailure`; a reboot with pending state restores the previous files before the
+proxy starts. Failed recovery leaves a pending record and a failed unit for
+operator attention. There is no infinite new/old retry loop and no automatic
+redeployment of a rejected version.
+
+~~~bash
+sudo python3 /usr/local/lib/cliproxy-deploy/rollout.py status
+sudo systemctl --failed
+sudo journalctl -u cliproxyapi-deploy-recover.service -n 50 --no-pager
+~~~
+
+The deployment journal and persisted `last-result.json` are the initial alert
+surfaces; no email/Slack notification transport is installed. Wire failed units
+into an existing monitoring system if unattended push alerts are required.
+
+The bundled scheduler `.so` is installed but existing production enable/disable
+settings are preserved. Merely deploying a bundle does not enable the scheduler.
+The external user-panel development mount/release channel also remains independent
+of this backend rollout; frontend changes are not rolled back by these scripts.
 
 ## 4. Configuration changes
 
@@ -140,17 +212,29 @@ accounted token rates match `gpt-5.6-luna` separately in the user or admin usage
 view after a request. The Luna relationship is an explicit local pricing
 assumption, not a claim that both model IDs route to the same backend.
 
-## 5. Rollback
+## 5. Manual rollback
+
+To roll back the most recently accepted deployment (including its config snapshot):
 
 ~~~bash
-sudo cp -a /opt/cliproxyapi/bin/cliproxyapi.before-<date> \
-  /opt/cliproxyapi/bin/cliproxyapi
-sudo systemctl restart cliproxyapi.service
-sudo systemctl is-active cliproxyapi.service
+sudo python3 /usr/local/lib/cliproxy-deploy/rollout.py rollback
 ~~~
 
-Restore the config backup the same way for a configuration regression. Roll
-back one of the two at a time so the cause stays identifiable.
+To retry recovery of an interrupted/failed deployment:
+
+~~~bash
+sudo systemctl start cliproxyapi-deploy-recover.service
+~~~
+
+Rollback never restores or deletes the production DB or auth files. Usage accrued
+and credential refreshes after deployment must survive. Configuration edits made
+after the captured snapshot will be replaced by manual rollback; review them first.
+Retain baseline and previous releases. There is no automatic garbage collection.
+
+The original `/opt/cliproxyapi/bin/cliproxyapi` path becomes a symlink on first
+promotion. Do not use the old `install`/`cp` commands to overwrite that link target:
+that would mutate an immutable release and bypass staging. Use this controller for
+subsequent binary rolls. The live config remains `/etc/cliproxyapi/config.yaml`.
 
 ## 6. Building from a restricted sandbox
 

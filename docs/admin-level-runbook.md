@@ -282,34 +282,24 @@ Rebuild for required implementation changes or to update embedded catalogs
 used with `--local-model`. Normal runtime catalog refresh requires neither a
 build nor binary installation. A restart alone cannot update embedded data.
 
-Prepare the artifact without sudo from the reviewed revision. Inspect the
-working tree first: do not deploy unrelated uncommitted work or blindly pull
-into a dirty checkout. Use an isolated checkout of the intended revision when
-necessary. Build verification alone does not constitute deployment:
+Use the staged rollout workflow in [build-and-deploy.md](build-and-deploy.md).
+Commit the reviewed revision, build the bundle, and verify it in the isolated
+staging service before starting the monitored production rollout:
 
 ~~~bash
 cd /home/minis/workspace/llmproxy
-git status --short
-/usr/local/go/bin/go test ./internal/registry ./internal/client/codex/models ./internal/thinking/... ./sdk/api/handlers/openai
-/usr/local/go/bin/go build -trimpath -o /tmp/cliproxyapi-new ./cmd/server
+bash deploy/safe-rollout/build.sh
+sudo python3 /usr/local/lib/cliproxy-deploy/rollout.py stage /tmp/cliproxy-bundles/<release>
+sudo systemctl start --no-block cliproxyapi-deploy@<release>.service
+sudo journalctl -fu cliproxyapi-deploy@<release>.service
 ~~~
 
-Once the artifact and intended revision are ready, escalate installation and
-restart to the operator. Back up the binary first; use a distinct backup name
-if one already exists:
-
-~~~bash
-sudo cp -a /opt/cliproxyapi/bin/cliproxyapi \
-  /opt/cliproxyapi/bin/cliproxyapi.before-model-change
-sudo install -o nobody -g nogroup -m 755 \
-  /tmp/cliproxyapi-new /opt/cliproxyapi/bin/cliproxyapi
-sudo systemctl restart cliproxyapi.service
-sudo systemctl is-active cliproxyapi.service
-curl -fsS http://100.110.30.57:8317/healthz
-~~~
-
-Repeat discovery, standard request, alias request, reasoning, tenancy, and
-telemetry checks. Keep the binary backup until accepted.
+Install the tooling once using the linked guide before these commands. It checks
+startup and local API health and automatically restores the previous release on
+failure during the observation window. Repeat model discovery, alias, reasoning,
+tenancy, and telemetry checks appropriate to the change; the mock staging test
+cannot establish real upstream entitlement. Never overwrite the release symlink
+with the legacy direct binary `install`/`cp` workflow.
 
 ## 6. Rollback
 
@@ -321,8 +311,10 @@ sudo chmod 600 /etc/cliproxyapi/config.yaml
 sudo systemctl restart cliproxyapi.service
 ~~~
 
-For a binary regression, restore
-/opt/cliproxyapi/bin/cliproxyapi.before-model-change and restart the service.
+For a binary regression after a monitored rollout, use
+`sudo python3 /usr/local/lib/cliproxy-deploy/rollout.py rollback`.
+This restores the previous binary/plugin/config snapshot without restoring the DB
+or credential files. Review later configuration edits before manual rollback.
 If a request returns auth_unavailable, fix credential entitlement or freshness;
 never map a new name to an unrelated model merely to pass a test.
 Linux-only OpenCode setup is in [USER_GUIDE.md](../USER_GUIDE.md).
