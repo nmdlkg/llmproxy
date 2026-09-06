@@ -380,3 +380,40 @@ func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
 		t.Fatal("request body was not restored with the original compressed bytes")
 	}
 }
+
+func TestCaptureRequestInfoRedactsSensitiveHeadersQueryAndBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	plaintext := "cp_u_browser-secret-value"
+	keyHash := strings.Repeat("a", 64)
+	req := httptest.NewRequest(http.MethodPost, "/v0/user/api-keys?key_hash="+keyHash+"&safe=ok", strings.NewReader(`{"key_hash":"`+keyHash+`","api_key":"`+plaintext+`","safe":"visible"}`))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	req.Header.Set("Cookie", "session="+plaintext)
+	req.Header.Set("X-API-Key", plaintext)
+	req.Header.Set("X-Safe", "visible")
+	c.Request = req
+
+	info, errCapture := captureRequestInfo(c, true)
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo: %v", errCapture)
+	}
+	if got := info.Headers["Authorization"]; len(got) != 1 || got[0] != redactedRequestLogValue {
+		t.Fatalf("authorization header = %#v, want redacted", got)
+	}
+	if got := info.Headers["Cookie"]; len(got) != 1 || got[0] != redactedRequestLogValue {
+		t.Fatalf("cookie header = %#v, want redacted", got)
+	}
+	if got := info.Headers["X-Api-Key"]; len(got) != 1 || got[0] != redactedRequestLogValue {
+		t.Fatalf("api key header = %#v, want redacted", got)
+	}
+	if got := info.Headers["X-Safe"]; len(got) != 1 || got[0] != "visible" {
+		t.Fatalf("safe header = %#v, want visible", got)
+	}
+	if strings.Contains(info.URL, keyHash) || strings.Contains(string(info.Body), keyHash) || strings.Contains(string(info.Body), plaintext) {
+		t.Fatalf("request log capture leaked secret: url=%q body=%q", info.URL, string(info.Body))
+	}
+	if !strings.Contains(string(info.Body), "visible") {
+		t.Fatalf("request log body lost non-sensitive field: %q", string(info.Body))
+	}
+}
