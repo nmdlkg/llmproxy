@@ -5,23 +5,33 @@ package middleware
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20  // 1 MiB
 	maxDeferredErrorRequestBodyBytes     int64 = 32 << 20 // 32 MiB
+)
+
+const redactedRequestLogValue = "[REDACTED]"
+
+var (
+	requestLogCredentialPattern = regexp.MustCompile(`(?i)\bcp_u_[A-Za-z0-9_-]+`)
+	requestLogBearerPattern     = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
+	requestLogSensitiveField    = regexp.MustCompile(`(?i)(["']?(?:authorization|cookie|set-cookie|api[_-]?key|key[_-]?hash|access[_-]?token|refresh[_-]?token|token|secret|password)["']?\s*[:=]\s*)(["']?)([^"'\s,}\]]+)(["']?)`)
 )
 
 // RequestLoggingMiddleware creates a Gin middleware that logs HTTP requests and responses.
@@ -310,7 +320,7 @@ func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
 // restored so that it can be processed by subsequent handlers.
 func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) {
 	// Capture URL with sensitive query parameters masked
-	maskedQuery := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
+	maskedQuery := redactRequestLogQuery(c.Request.URL.RawQuery)
 	url := c.Request.URL.Path
 	if maskedQuery != "" {
 		url += "?" + maskedQuery
@@ -320,10 +330,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	method := c.Request.Method
 
 	// Capture headers
-	headers := make(map[string][]string)
-	for key, values := range c.Request.Header {
-		headers[key] = values
-	}
+	headers := redactRequestLogHeaders(c.Request.Header)
 
 	// Capture request body
 	var body []byte
@@ -336,7 +343,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 
 		// Restore the body for the actual request processing
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
+		body = redactRequestLogBody(decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding")))
 	}
 
 	return &RequestInfo{
@@ -347,6 +354,121 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		RequestID: logging.GetGinRequestID(c),
 		Timestamp: time.Now(),
 	}, nil
+}
+
+func isSensitiveRequestLogHeader(key string) bool {
+	lowerKey := strings.ToLower(strings.TrimSpace(key))
+	return lowerKey == "authorization" ||
+		lowerKey == "proxy-authorization" ||
+		lowerKey == "cookie" ||
+		lowerKey == "set-cookie" ||
+		strings.Contains(lowerKey, "api-key") ||
+		strings.Contains(lowerKey, "api_key") ||
+		strings.Contains(lowerKey, "apikey")
+}
+
+func redactRequestLogHeaders(headers http.Header) map[string][]string {
+	redacted := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		copied := make([]string, len(values))
+		for index, value := range values {
+			if isSensitiveRequestLogHeader(key) {
+				copied[index] = redactedRequestLogValue
+			} else {
+				copied[index] = value
+			}
+		}
+		redacted[key] = copied
+	}
+	return redacted
+}
+
+func redactRequestLogQuery(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, "&")
+	for index, part := range parts {
+		if part == "" {
+			continue
+		}
+		keyPart, valuePart := part, ""
+		if separator := strings.IndexByte(part, '='); separator >= 0 {
+			keyPart, valuePart = part[:separator], part[separator+1:]
+		}
+		decodedKey, errDecode := url.QueryUnescape(keyPart)
+		if errDecode != nil {
+			decodedKey = keyPart
+		}
+		if isSensitiveRequestLogField(decodedKey) {
+			parts[index] = keyPart + "=" + url.QueryEscape(redactedRequestLogValue)
+			continue
+		}
+		decodedValue, errDecode := url.QueryUnescape(valuePart)
+		if errDecode == nil {
+			valuePart = url.QueryEscape(redactRequestLogText(decodedValue))
+		}
+		parts[index] = keyPart + "=" + valuePart
+	}
+	return strings.Join(parts, "&")
+}
+
+func redactRequestLogBody(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	if !requestLogCredentialPattern.Match(body) && !requestLogBearerPattern.Match(body) && !requestLogSensitiveField.Match(body) {
+		return body
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if errDecode := decoder.Decode(&value); errDecode == nil {
+		value = redactRequestLogJSONValue(value)
+		if encoded, errMarshal := json.Marshal(value); errMarshal == nil {
+			return []byte(redactRequestLogText(string(encoded)))
+		}
+	}
+	return []byte(redactRequestLogText(string(body)))
+}
+
+func redactRequestLogJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if isSensitiveRequestLogField(key) {
+				typed[key] = redactedRequestLogValue
+				continue
+			}
+			typed[key] = redactRequestLogJSONValue(child)
+		}
+	case []any:
+		for index := range typed {
+			typed[index] = redactRequestLogJSONValue(typed[index])
+		}
+	}
+	return value
+}
+
+func isSensitiveRequestLogField(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.TrimSuffix(normalized, "[]")
+	if normalized == "authorization" || normalized == "cookie" || normalized == "set-cookie" || normalized == "password" {
+		return true
+	}
+	return strings.Contains(normalized, "api-key") ||
+		strings.Contains(normalized, "api_key") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "key-hash") ||
+		strings.Contains(normalized, "key_hash") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret")
+}
+
+func redactRequestLogText(value string) string {
+	value = requestLogCredentialPattern.ReplaceAllString(value, redactedRequestLogValue)
+	value = requestLogBearerPattern.ReplaceAllString(value, "Bearer "+redactedRequestLogValue)
+	return requestLogSensitiveField.ReplaceAllString(value, "${1}${2}"+redactedRequestLogValue+"${4}")
 }
 
 func decodeCapturedRequestBodyForLog(raw []byte, encoding string) []byte {

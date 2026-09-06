@@ -189,6 +189,8 @@ func HideAPIKey(apiKey string) string {
 	return apiKey
 }
 
+const redactedSensitiveValue = "[REDACTED]"
+
 // maskAuthorizationHeader masks the Authorization header value while preserving the auth type prefix.
 // Common formats: "Bearer <token>", "Basic <credentials>", "ApiKey <key>", etc.
 // It preserves the prefix (e.g., "Bearer ") and only masks the token/credential part.
@@ -201,9 +203,9 @@ func HideAPIKey(apiKey string) string {
 func MaskAuthorizationHeader(value string) string {
 	parts := strings.SplitN(strings.TrimSpace(value), " ", 2)
 	if len(parts) < 2 {
-		return HideAPIKey(value)
+		return redactedSensitiveValue
 	}
-	return parts[0] + " " + HideAPIKey(parts[1])
+	return parts[0] + " " + redactedSensitiveValue
 }
 
 // MaskSensitiveHeaderValue masks sensitive header values while preserving expected formats.
@@ -224,11 +226,13 @@ func MaskSensitiveHeaderValue(key, value string) string {
 	switch {
 	case strings.Contains(lowerKey, "authorization"):
 		return MaskAuthorizationHeader(value)
+	case strings.Contains(lowerKey, "cookie"):
+		return redactedSensitiveValue
 	case strings.Contains(lowerKey, "api-key"),
 		strings.Contains(lowerKey, "apikey"),
 		strings.Contains(lowerKey, "token"),
 		strings.Contains(lowerKey, "secret"):
-		return HideAPIKey(value)
+		return redactedSensitiveValue
 	default:
 		return value
 	}
@@ -246,10 +250,8 @@ func MaskSensitiveQuery(raw string) string {
 			continue
 		}
 		keyPart := part
-		valuePart := ""
 		if idx := strings.Index(part, "="); idx >= 0 {
 			keyPart = part[:idx]
-			valuePart = part[idx+1:]
 		}
 		decodedKey, err := url.QueryUnescape(keyPart)
 		if err != nil {
@@ -258,11 +260,7 @@ func MaskSensitiveQuery(raw string) string {
 		if !shouldMaskQueryParam(decodedKey) {
 			continue
 		}
-		decodedValue, err := url.QueryUnescape(valuePart)
-		if err != nil {
-			decodedValue = valuePart
-		}
-		masked := HideAPIKey(strings.TrimSpace(decodedValue))
+		masked := redactedSensitiveValue
 		parts[i] = keyPart + "=" + url.QueryEscape(masked)
 		changed = true
 	}
@@ -278,7 +276,8 @@ func shouldMaskQueryParam(key string) bool {
 		return false
 	}
 	key = strings.TrimSuffix(key, "[]")
-	if key == "key" || strings.Contains(key, "api-key") || strings.Contains(key, "apikey") || strings.Contains(key, "api_key") {
+	if key == "key" || key == "authorization" || key == "cookie" ||
+		strings.Contains(key, "api-key") || strings.Contains(key, "apikey") || strings.Contains(key, "api_key") {
 		return true
 	}
 	if strings.Contains(key, "token") || strings.Contains(key, "secret") {
