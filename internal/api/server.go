@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/userpanelasset"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -89,6 +90,12 @@ type Server struct {
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
+
+	// userPanelAsset and userPanelSupervisor are instance-owned. The supervisor
+	// performs background update work; request handlers only read the configured
+	// local development file or verified release cache.
+	userPanelAsset      *userpanelasset.Manager
+	userPanelSupervisor *userpanelasset.Supervisor
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -178,6 +185,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
 
+	// The panel is maintained in the separate CLIProxyAPI-User-Panel repository.
+	// The backend serves its configured local build or verified release cache;
+	// it no longer embeds a frontend copy that can drift from that repository.
+	panelAsset := userpanelasset.NewManager(configFilePath)
+	panelSupervisor := userpanelasset.NewSupervisor(panelAsset)
+	panelSupervisor.SetConfig(cfg)
+
 	// Create server instance
 	s := &Server{
 		engine:              engine,
@@ -191,6 +205,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		userPanelAsset:      panelAsset,
+		userPanelSupervisor: panelSupervisor,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
@@ -265,6 +281,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		sdkAuth.GetTokenStore(),
 		s.mgmt,
 	)
+	s.user.SetUserPanelAsset(panelAsset)
 	s.localPassword = optionState.localPassword
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
@@ -364,6 +381,10 @@ func (s *Server) Start() error {
 	httpListener := newMuxListener(listener.Addr(), 1024)
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
+	if s.userPanelSupervisor != nil {
+		s.userPanelSupervisor.Start(context.Background())
+		defer s.userPanelSupervisor.Stop()
+	}
 
 	httpErrCh := make(chan error, 1)
 	acceptErrCh := make(chan error, 1)
@@ -433,6 +454,9 @@ func (s *Server) Stop(ctx context.Context) error {
 		case s.keepAliveStop <- struct{}{}:
 		default:
 		}
+	}
+	if s.userPanelSupervisor != nil {
+		s.userPanelSupervisor.Stop()
 	}
 
 	if s.muxHTTPListener != nil {

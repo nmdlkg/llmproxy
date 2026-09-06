@@ -59,6 +59,30 @@ func TestUsageByModelIsolatesUsersAndCountsFailures(t *testing.T) {
 	}
 }
 
+func TestUsageByProviderAggregatesExactMoneyAndTokens(t *testing.T) {
+	store := newTestStore(t)
+	base := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)
+	seedAggregateUsage(t, store, base)
+
+	stats, errStats := store.UsageByProvider(context.Background(), "user-a", base.Add(-time.Hour), base.Add(72*time.Hour))
+	if errStats != nil {
+		t.Fatalf("UsageByProvider() error = %v", errStats)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("UsageByProvider() returned %d rows, want 2", len(stats))
+	}
+	byProvider := make(map[string]UsageProviderStat, len(stats))
+	for _, stat := range stats {
+		byProvider[stat.Provider] = stat
+	}
+	if got := byProvider["codex"]; got.CostNanoUSD != 300 || got.InputTokens != 30 || got.OutputTokens != 12 || got.Attempts != 2 || got.FailedAttempts != 0 {
+		t.Errorf("codex provider stat = %+v, want exact aggregate", got)
+	}
+	if got := byProvider["claude"]; got.CostNanoUSD != 400 || got.InputTokens != 40 || got.OutputTokens != 9 || got.Attempts != 1 || got.FailedAttempts != 1 {
+		t.Errorf("claude provider stat = %+v, want exact aggregate", got)
+	}
+}
+
 func TestUsageByDayBucketsIntoUTCDays(t *testing.T) {
 	store := newTestStore(t)
 	base := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)

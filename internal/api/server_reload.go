@@ -177,6 +177,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
 	managementasset.SetCurrentConfig(cfg)
+	if s.userPanelSupervisor != nil {
+		s.userPanelSupervisor.SetConfig(cfg)
+	}
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
@@ -194,6 +197,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
 		s.mgmt.SetPluginHost(s.pluginHost)
+	}
+	if s.user != nil {
+		s.user.SetConfig(cfg)
 	}
 	s.refreshPluginManagementRoutes()
 

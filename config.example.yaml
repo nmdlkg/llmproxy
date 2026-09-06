@@ -237,6 +237,21 @@ auto-routing:
 # lost database and works with every auth store backend.
 tenancy:
   enabled: false
+
+  # The user panel is maintained in the separate CLIProxyAPI-User-Panel
+  # repository. Local development builds are served through USER_PANEL_STATIC_PATH;
+  # published releases are signed and verified before they are cached on disk.
+  user-panel:
+    github-repository: "https://github.com/nmdlkg/CLIProxyAPI-User-Panel"
+    # Optional exact semver release. Empty selects the newest stable release.
+    # Pins below the cache high-water floor are rejected.
+    pinned-version: ""
+    disable-auto-update: false
+    # Enables the role-admin manual refresh endpoint. USER_PANEL_DEV_MODE can
+    # override this value for a process-local development deployment. When
+    # USER_PANEL_STATIC_PATH is set, /user reads that local user.html on every
+    # request and all remote updates are disabled.
+    dev-mode: false
   # Empty defaults to <auth-dir>/../tenancy.db
   db-path: ""
   # How often a user's own credential is softly preferred for their request, so

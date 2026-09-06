@@ -12,10 +12,33 @@ import (
 	"time"
 )
 
+const (
+	// MaxActiveAPIKeys is the maximum number of non-revoked keys a user may
+	// retain. Revoked rows remain in the database and do not consume this cap.
+	MaxActiveAPIKeys = 25
+	// MaxAPIKeyCreationsPerMinute limits key creation attempts for one
+	// authenticated actor. The limit is enforced transactionally in SQLite.
+	MaxAPIKeyCreationsPerMinute = 5
+	apiKeyCreationWindow        = time.Minute
+)
+
 // HashAPIKey returns the SHA-256 hex digest used for API key persistence.
 func HashAPIKey(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
+}
+
+// ValidateAPIKeyHash accepts only the lowercase SHA-256 wire representation
+// used by browser clients. The plaintext key must never be sent to the server
+// for browser registration.
+func ValidateAPIKeyHash(keyHash string) error {
+	if len(keyHash) != sha256.Size*2 || keyHash != strings.ToLower(keyHash) {
+		return fmt.Errorf("%w: expected lowercase 64-character hex", ErrInvalidAPIKeyHash)
+	}
+	if _, errDecode := hex.DecodeString(keyHash); errDecode != nil {
+		return fmt.Errorf("%w: expected lowercase 64-character hex: %v", ErrInvalidAPIKeyHash, errDecode)
+	}
+	return nil
 }
 
 // normalizeEmail canonicalizes a user email to trimmed lower case.
@@ -172,27 +195,132 @@ func (s *SQLiteStore) ListUsers() ([]User, error) {
 
 // IssueAPIKey creates a user key and returns its plaintext exactly once.
 func (s *SQLiteStore) IssueAPIKey(userID, label string) (string, *APIKey, error) {
-	if _, errUser := s.GetUser(userID); errUser != nil {
-		return "", nil, errUser
-	}
 	randomBytes := make([]byte, 32)
 	if _, errRead := rand.Read(randomBytes); errRead != nil {
 		return "", nil, fmt.Errorf("tenancy sqlite: generate API key: %w", errRead)
 	}
 	plaintext := "cp_u_" + base64.RawURLEncoding.EncodeToString(randomBytes)
-	key := &APIKey{
-		KeyHash:   HashAPIKey(plaintext),
-		UserID:    userID,
-		Label:     strings.TrimSpace(label),
-		CreatedAt: time.Now().UTC(),
-	}
-	if _, errExec := s.db.Exec(`
-		INSERT INTO user_api_keys (key_hash, user_id, label, created_at)
-		VALUES (?, ?, ?, ?)
-	`, key.KeyHash, key.UserID, key.Label, timeValue(key.CreatedAt)); errExec != nil {
-		return "", nil, fmt.Errorf("tenancy sqlite: issue API key: %w", errExec)
+	key, errRegister := s.RegisterAPIKeyHash(userID, HashAPIKey(plaintext), label)
+	if errRegister != nil {
+		return "", nil, fmt.Errorf("tenancy sqlite: issue API key: %w", errRegister)
 	}
 	return plaintext, key, nil
+}
+
+// RegisterAPIKeyHash registers browser-generated key metadata. It accepts only
+// a SHA-256 hash; plaintext cp_u_ material is intentionally not an argument.
+func (s *SQLiteStore) RegisterAPIKeyHash(userID, keyHash, label string) (*APIKey, error) {
+	return s.RegisterAPIKeyHashForActor(userID, userID, keyHash, label)
+}
+
+// RegisterAPIKeyHashForActor registers a key on behalf of an authenticated
+// actor. Admin workflows use this form so the creation rate limit is attached
+// to the actor rather than the target user.
+func (s *SQLiteStore) RegisterAPIKeyHashForActor(actorID, userID, keyHash, label string) (*APIKey, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("tenancy sqlite: not initialized")
+	}
+	if errValidate := ValidateAPIKeyHash(keyHash); errValidate != nil {
+		return nil, errValidate
+	}
+	actorID = strings.TrimSpace(actorID)
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("tenancy sqlite: user ID is empty")
+	}
+	if actorID == "" {
+		actorID = userID
+	}
+	if _, errUser := s.GetUser(userID); errUser != nil {
+		return nil, errUser
+	}
+
+	now := time.Now().UTC()
+	if errAttempt := s.consumeAPIKeyRegistrationAttempt(actorID, now); errAttempt != nil {
+		return nil, errAttempt
+	}
+	tx, errBegin := s.db.Begin()
+	if errBegin != nil {
+		return nil, fmt.Errorf("tenancy sqlite: begin API key registration: %w", errBegin)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	var exists int
+	if errScan := tx.QueryRow(`SELECT COUNT(1) FROM user_api_keys WHERE key_hash = ?`, keyHash).Scan(&exists); errScan != nil {
+		return nil, fmt.Errorf("tenancy sqlite: inspect API key registration: %w", errScan)
+	}
+	if exists != 0 {
+		return nil, ErrAPIKeyExists
+	}
+
+	var active int
+	if errScan := tx.QueryRow(`
+		SELECT COUNT(1)
+		FROM user_api_keys
+		WHERE user_id = ? AND revoked_at IS NULL
+	`, userID).Scan(&active); errScan != nil {
+		return nil, fmt.Errorf("tenancy sqlite: count active API keys: %w", errScan)
+	}
+	if active >= MaxActiveAPIKeys {
+		return nil, ErrAPIKeyLimit
+	}
+
+	key := &APIKey{
+		KeyHash:   keyHash,
+		UserID:    userID,
+		Label:     strings.TrimSpace(label),
+		CreatedAt: now,
+	}
+	if _, errExec := tx.Exec(`
+		INSERT INTO user_api_keys (key_hash, user_id, created_by, label, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, key.KeyHash, key.UserID, actorID, key.Label, timeValue(key.CreatedAt)); errExec != nil {
+		return nil, fmt.Errorf("tenancy sqlite: register API key hash: %w", errExec)
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return nil, fmt.Errorf("tenancy sqlite: commit API key registration: %w", errCommit)
+	}
+	return key, nil
+}
+
+// consumeAPIKeyRegistrationAttempt reserves one actor-scoped attempt before
+// key registration begins. It commits independently so duplicate, over-cap,
+// and other rejected valid-hash attempts cannot bypass the limit by rolling
+// back the registration transaction.
+func (s *SQLiteStore) consumeAPIKeyRegistrationAttempt(actorID string, now time.Time) error {
+	tx, errBegin := s.db.Begin()
+	if errBegin != nil {
+		return fmt.Errorf("tenancy sqlite: begin API key attempt: %w", errBegin)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	cutoff := timeValue(now.Add(-apiKeyCreationWindow))
+	if _, errDelete := tx.Exec(`DELETE FROM api_key_registration_attempts WHERE attempted_at < ?`, cutoff); errDelete != nil {
+		return fmt.Errorf("tenancy sqlite: prune API key attempts: %w", errDelete)
+	}
+	var recent int
+	if errScan := tx.QueryRow(`
+		SELECT COUNT(1)
+		FROM api_key_registration_attempts
+		WHERE actor_id = ? AND attempted_at >= ?
+	`, actorID, cutoff).Scan(&recent); errScan != nil {
+		return fmt.Errorf("tenancy sqlite: count API key attempts: %w", errScan)
+	}
+	if recent >= MaxAPIKeyCreationsPerMinute {
+		return ErrAPIKeyRateLimit
+	}
+	if _, errInsert := tx.Exec(`
+		INSERT INTO api_key_registration_attempts (actor_id, attempted_at)
+		VALUES (?, ?)
+	`, actorID, timeValue(now)); errInsert != nil {
+		return fmt.Errorf("tenancy sqlite: record API key attempt: %w", errInsert)
+	}
+	if errCommit := tx.Commit(); errCommit != nil {
+		return fmt.Errorf("tenancy sqlite: commit API key attempt: %w", errCommit)
+	}
+	return nil
 }
 
 // LookupByAPIKey resolves an active key hash and records its last use.

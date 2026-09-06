@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +50,12 @@ func (h *Handler) GetUsage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
 		return
 	}
+	providers, errProviders := h.store().UsageByProvider(ctx, user.ID, since, until)
+	if errProviders != nil {
+		log.WithError(errProviders).WithField("user_id", user.ID).Error("user usage: load provider breakdown")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
+		return
+	}
 	days, errDays := h.store().UsageByDay(ctx, user.ID, since, until)
 	if errDays != nil {
 		log.WithError(errDays).WithField("user_id", user.ID).Error("user usage: load daily trend")
@@ -56,13 +63,18 @@ func (h *Handler) GetUsage(c *gin.Context) {
 		return
 	}
 	modelItems := make([]gin.H, 0, len(models))
-	var attempts, failedAttempts int64
+	providerItems := make([]gin.H, 0, len(providers))
+	var totalCost, inputTokens, outputTokens, attempts, failedAttempts int64
 	for _, stat := range models {
+		totalCost += stat.CostNanoUSD
+		inputTokens += stat.InputTokens
+		outputTokens += stat.OutputTokens
 		attempts += stat.Attempts
 		failedAttempts += stat.FailedAttempts
 		modelItems = append(modelItems, gin.H{
 			"provider":        stat.Provider,
 			"model":           stat.Model,
+			"cost_nano_usd":   formatNanoUSDDecimal(stat.CostNanoUSD),
 			"cost":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
 			"input_tokens":    stat.InputTokens,
 			"output_tokens":   stat.OutputTokens,
@@ -70,10 +82,22 @@ func (h *Handler) GetUsage(c *gin.Context) {
 			"failed_attempts": stat.FailedAttempts,
 		})
 	}
-	dailyItems := make([]gin.H, 0, len(days))
-	for _, stat := range days {
+	for _, stat := range providers {
+		providerItems = append(providerItems, gin.H{
+			"provider":        stat.Provider,
+			"cost_nano_usd":   formatNanoUSDDecimal(stat.CostNanoUSD),
+			"cost":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
+			"input_tokens":    stat.InputTokens,
+			"output_tokens":   stat.OutputTokens,
+			"attempts":        stat.Attempts,
+			"failed_attempts": stat.FailedAttempts,
+		})
+	}
+	dailyItems := make([]gin.H, 0)
+	for _, stat := range denseDailyUsage(since, until, days) {
 		dailyItems = append(dailyItems, gin.H{
 			"day":             stat.Day.Format("2006-01-02"),
+			"cost_nano_usd":   formatNanoUSDDecimal(stat.CostNanoUSD),
 			"cost":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
 			"input_tokens":    stat.InputTokens,
 			"output_tokens":   stat.OutputTokens,
@@ -82,10 +106,24 @@ func (h *Handler) GetUsage(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"usage":  quota,
-		"models": modelItems,
-		"daily":  dailyItems,
+		"schema_version": 1,
+		"currency":       "USD",
+		"range": gin.H{
+			"start":    since.UTC(),
+			"end":      until.UTC(),
+			"timezone": "UTC",
+		},
+		// Keep the existing quota field while exposing the canonical contract
+		// fields consumed by dashboard clients.
+		"usage":     quota,
+		"models":    modelItems,
+		"providers": providerItems,
+		"daily":     dailyItems,
 		"totals": gin.H{
+			"cost_nano_usd":   formatNanoUSDDecimal(totalCost),
+			"cost":            tenancy.FormatNanoUSD(totalCost),
+			"input_tokens":    inputTokens,
+			"output_tokens":   outputTokens,
 			"attempts":        attempts,
 			"failed_attempts": failedAttempts,
 		},
@@ -107,42 +145,67 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"api_keys": items})
 }
 
-func (h *Handler) IssueAPIKey(c *gin.Context) {
+// RegisterAPIKeyHash stores metadata for a browser-generated cp_u_ key. The
+// plaintext key is never accepted by or returned from this HTTP handler.
+func (h *Handler) RegisterAPIKeyHash(c *gin.Context) {
 	user, _ := currentUser(c)
 	var request struct {
-		Label string `json:"label"`
+		KeyHash string `json:"key_hash"`
+		Label   string `json:"label"`
 	}
-	if c.Request.ContentLength != 0 {
+	if c.Request == nil || c.Request.ContentLength != 0 {
 		if errBind := c.ShouldBindJSON(&request); errBind != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
 		}
 	}
-	plaintext, key, errIssue := h.store().IssueAPIKey(user.ID, request.Label)
-	if errIssue != nil {
-		log.WithError(errIssue).WithField("user_id", user.ID).Error("user api keys: issue failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue API key"})
+	key, errRegister := h.store().RegisterAPIKeyHash(user.ID, request.KeyHash, request.Label)
+	if errRegister != nil {
+		switch {
+		case errors.Is(errRegister, tenancy.ErrInvalidAPIKeyHash):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash must be a lowercase 64-character SHA-256 hex string"})
+		case errors.Is(errRegister, tenancy.ErrAPIKeyRateLimit):
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "API key creation rate limit exceeded"})
+		case errors.Is(errRegister, tenancy.ErrAPIKeyLimit), errors.Is(errRegister, tenancy.ErrAPIKeyExists):
+			c.JSON(http.StatusConflict, gin.H{"error": "API key cannot be registered"})
+		default:
+			log.WithError(errRegister).WithField("user_id", user.ID).Error("user api keys: register failed")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register API key"})
+		}
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
-		"api_key": plaintext,
-		"key":     apiKeyResponse(*key),
+		"key": apiKeyResponse(*key),
 	})
 }
 
 func (h *Handler) DeleteAPIKey(c *gin.Context) {
 	user, _ := currentUser(c)
-	hash := strings.TrimSpace(c.Query("hash"))
+	hash := strings.TrimSpace(c.Param("hash"))
+	if hash == "" {
+		hash = strings.TrimSpace(c.Query("key_hash"))
+	}
+	if hash == "" {
+		hash = strings.TrimSpace(c.Query("hash"))
+	}
 	if hash == "" {
 		var request struct {
-			Hash string `json:"hash"`
+			KeyHash string `json:"key_hash"`
+			Hash    string `json:"hash"`
 		}
 		if errBind := c.ShouldBindJSON(&request); errBind == nil {
-			hash = strings.TrimSpace(request.Hash)
+			hash = strings.TrimSpace(request.KeyHash)
+			if hash == "" {
+				hash = strings.TrimSpace(request.Hash)
+			}
 		}
 	}
 	if hash == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "hash is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash is required"})
+		return
+	}
+	if errValidate := tenancy.ValidateAPIKeyHash(hash); errValidate != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash must be a lowercase 64-character SHA-256 hex string"})
 		return
 	}
 	keys, errList := h.store().ListAPIKeys(user.ID)
@@ -235,6 +298,7 @@ func quotaWindow(cfg *config.Config) time.Duration {
 
 func apiKeyResponse(key tenancy.APIKey) gin.H {
 	response := gin.H{
+		"key_hash":   key.KeyHash,
 		"hash":       key.KeyHash,
 		"label":      key.Label,
 		"created_at": key.CreatedAt,
@@ -247,4 +311,41 @@ func apiKeyResponse(key tenancy.APIKey) gin.H {
 		response["revoked_at"] = key.RevokedAt
 	}
 	return response
+}
+
+func formatNanoUSDDecimal(nanoUSD int64) string {
+	return strconv.FormatInt(nanoUSD, 10)
+}
+
+// denseDailyUsage fills every UTC calendar day touched by [since, until).
+// The store query is intentionally sparse; zero-value buckets make dashboard
+// charts deterministic and prevent missing days from being interpreted as
+// missing data.
+func denseDailyUsage(since, until time.Time, sparse []tenancy.UsageDailyStat) []tenancy.UsageDailyStat {
+	start := utcDayStart(since)
+	end := until.UTC()
+	if !start.Before(end) {
+		return []tenancy.UsageDailyStat{}
+	}
+	byDay := make(map[string]tenancy.UsageDailyStat, len(sparse))
+	for _, stat := range sparse {
+		stat.Day = utcDayStart(stat.Day)
+		byDay[stat.Day.Format("2006-01-02")] = stat
+	}
+	buckets := make([]tenancy.UsageDailyStat, 0)
+	for day := start; day.Before(end); day = day.Add(24 * time.Hour) {
+		key := day.Format("2006-01-02")
+		stat, exists := byDay[key]
+		if !exists {
+			stat.Day = day
+		}
+		buckets = append(buckets, stat)
+	}
+	return buckets
+}
+
+func utcDayStart(value time.Time) time.Time {
+	value = value.UTC()
+	year, month, day := value.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
