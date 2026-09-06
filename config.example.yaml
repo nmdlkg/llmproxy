@@ -173,6 +173,7 @@ openrouter:
     # Every target below was verified to exist in the live catalog; a target
     # that does not exist prices as unknown and is therefore worse than useless.
     "claude-opus-5": "anthropic/claude-opus-5"
+    "claude-fable-5-1": "anthropic/claude-fable-5.1"
     "claude-sonnet-5": "anthropic/claude-sonnet-5"
     "gpt-5.6-sol": "openai/gpt-5.6-sol"
     "gpt-5.6-luna": "openai/gpt-5.6-luna"
@@ -236,7 +237,7 @@ auto-routing:
 # top-level keys owner_user_id / shared / contribution_tier, so it survives a
 # lost database and works with every auth store backend.
 tenancy:
-  enabled: false
+  enabled: true
 
   # The user panel is maintained in the separate CLIProxyAPI-User-Panel
   # repository. Local development builds are served through USER_PANEL_STATIC_PATH;

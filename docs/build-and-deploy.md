@@ -212,6 +212,74 @@ accounted token rates match `gpt-5.6-luna` separately in the user or admin usage
 view after a request. The Luna relationship is an explicit local pricing
 assumption, not a claim that both model IDs route to the same backend.
 
+### Map Claude Fable 5.1 for quota accounting
+
+Merge this entry into the existing `openrouter.model-map` before enabling quota
+enforcement for users of Fable 5.1:
+
+~~~yaml
+openrouter:
+  model-map:
+    "claude-fable-5-1": "anthropic/claude-fable-5.1"
+~~~
+
+The local ID uses `5-1`, but the [OpenRouter catalog entry](https://openrouter.ai/anthropic/claude-fable-5.1)
+uses `5.1`. The conservative model matcher strips vendor prefixes and date
+suffixes; it does not substitute punctuation. Without this explicit entry,
+quota accounting can use fallback prices instead of the catalog price. Keep
+`openrouter.enabled: true` and `openrouter.cost-basis: openrouter` for catalog
+pricing. This mapping does not change the requested upstream model ID.
+
+The separate cc-otel exporter and monthly reporter need their own mapping;
+the proxy's configuration does not configure those processes. Updating their
+mapping recalculates the rolling seven-day estimate and prices future deltas,
+but does not retroactively reprice the exporter's lifetime counters or the
+proxy's existing usage ledger.
+
+### Set contribution tiers before enforcing weekly quotas
+
+`tenancy.quota.window: "168h"` means a rolling seven-day window. A base of
+`100.0` plus a contribution equal to twice the monthly subscription price gives
+each shared credential that additional allowance every seven days; it does not
+prorate the monthly subscription price. Existing in-window usage is considered
+as soon as enforcement is enabled.
+
+Merge contribution entries under `tenancy.quota.contribution-usd` using these
+keys and the actual subscription cost:
+
+| Provider key | Tier key | Weekly contribution policy |
+| --- | --- | --- |
+| `codex` | `plus` | `40.0` for a $20/month subscription |
+| `codex` | `prolite` | `200.0` for a $100/month subscription |
+| `codex` | `pro` | `400.0` for a $200/month subscription |
+| `codex` | `education` | Twice the actual monthly per-seat cost; verify the institutional contract |
+| `claude` | Credential's `contribution_tier`, or `default` | Twice the actual monthly subscription cost |
+| `xai` | Credential's `contribution_tier`, or `default` | Twice the actual monthly subscription cost |
+| `antigravity` | Credential's `contribution_tier`, or `default` | Twice the actual monthly subscription cost |
+
+Use the exact runtime tier values: the inspected production Codex tokens report
+`prolite` and `education`, not `pro-lite` and `edu`. There is no automatic alias
+conversion between these spellings. Antigravity credentials use `antigravity`,
+so a contribution configured only under `gemini` does not apply to them.
+
+Grok uses provider key `xai`, not `grok`. The file credential synthesizer extracts
+Codex's `plan_type` from its ID token; this takes precedence over
+`contribution_tier`. Claude and xAI use `contribution_tier`, falling back to
+`default` when absent. A single `default` value cannot distinguish mixed paid
+plans. Only credentials owned by the user, shared, and not disabled contribute.
+An absent `shared` field does not count as `true`; merely assigning an owner or
+using a credential for requests does not grant contribution allowance. Inspect
+the stored ID token's plan claim rather than inferring a tier from its filename.
+The database contains user tiers and usage; it is not the source of subscription
+prices or credential plan tiers.
+
+Review existing named `base-usd` tiers, which override `default`, and preserve
+unrelated quota fields. After configuration edits, use the ownership, permissions,
+and restart commands above. Verify users' effective allowance and existing ledger
+usage in the user/admin panel. `auto-routing.quota-fallback` can route exhausted
+users to the fallback model instead of denying requests when its conditions are
+met; set it to `false` if the policy requires denial.
+
 ## 5. Manual rollback
 
 To roll back the most recently accepted deployment (including its config snapshot):

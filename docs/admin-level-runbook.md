@@ -143,6 +143,7 @@ they do not update the checkout or installed binary.
 | Home mode | Update/verify model IDs in Home. Without `--local-model`, the Codex client metadata updater still runs. | No for a Home model-list change; local `models.json` cannot add Home IDs. |
 | Running binary lacks a required updater, protocol capability, or runtime fix | Prepare and validate the implementation update, then use section 5. | Yes. |
 | Only an optional `-fast` alias is needed | Merge the global alias and payload rule in section 4. | No; this is configuration. |
+| Model works, but its local name differs from the OpenRouter pricing ID | Add an explicit pricing mapping as described below. | No; this is configuration. |
 
 Start with this read-only check (no sudo when systemd permits it):
 
@@ -215,6 +216,45 @@ alias separately only if configured. Discovery and `/healthz` alone do not
 prove upstream execution works. Never paste API keys or OAuth tokens into chat.
 Remove the temporary auth file after all checks using the cleanup in section 4,
 even when skipping alias configuration.
+
+### Resolve model-name mismatches in usage pricing
+
+A model can execute successfully while its usage is priced incorrectly. The
+OpenRouter pricing matcher only accepts unique case-insensitive matches after
+removing a vendor prefix or date suffix; it does not convert version punctuation.
+For example, local `claude-fable-5-1` does not match the catalog ID
+[`anthropic/claude-fable-5.1`](https://openrouter.ai/anthropic/claude-fable-5.1).
+Without an explicit mapping, the proxy can use fallback token prices, while
+cc-otel can report the tokens as unpriced and omit their cost.
+
+Verify the exact target ID in the OpenRouter catalog, then merge this entry into
+the existing `/etc/cliproxyapi/config.yaml` mapping:
+
+~~~yaml
+openrouter:
+  model-map:
+    "claude-fable-5-1": "anthropic/claude-fable-5.1"
+~~~
+
+Catalog pricing requires `openrouter.enabled: true` and
+`openrouter.cost-basis: openrouter`. This mapping affects accounting, not the
+upstream request model; do not create an OAuth routing alias to fix pricing.
+Follow [the configuration change procedure](build-and-deploy.md#4-configuration-changes)
+for backup, ownership, permissions, and restart. No binary rebuild is required.
+
+cc-otel has independent mappings in `usage_cost_exporter/cost_exporter.py` and
+`usage_reporter/monthly_report.py`; both include this Fable mapping. Its
+`MODEL_ID_OVERRIDES` environment setting takes precedence over built-in entries.
+Updating proxy configuration alone does not update cc-otel. After an exporter
+mapping change, restart the exporter and verify that the model disappears from
+`ai_usage_unpriced_tokens_last_7d{source="llmproxy"}` and has a cost in
+`ai_usage_estimated_cost_last_7d_usd{source="llmproxy"}`. Check the proxy's
+accounted rates separately in the user/admin usage view after a request.
+
+The exporter recalculates the rolling seven-day estimate, but the mapping change
+does not retroactively reprice its lifetime counters or the proxy's existing
+usage ledger. Reassess quota limits using the corrected estimate before enabling
+enforcement; a previously low estimate may have omitted substantial usage.
 
 ## 4. Add an optional global Codex alias
 
