@@ -183,7 +183,9 @@ openrouter:
     "claude-haiku-4-5": "anthropic/claude-haiku-4.5"
     # Aliases with no catalog entry of their own are priced as the model they
     # run on. Without these the tokens are counted but never priced.
-    "codex-auto-review": "openai/gpt-5.3-codex"
+    # Auto Review is a separate, narrow reviewer; use Luna as the local model
+    # class for cost estimation, not as a routing alias or backend identity.
+    "codex-auto-review": "openai/gpt-5.6-luna"
     "gpt-5.3-codex-spark": "openai/gpt-5.3-codex"
     "gpt-5.5-fast": "openai/gpt-5.5"
     "gpt-5.4-mini-fast": "openai/gpt-5.4-mini"
@@ -209,14 +211,14 @@ auto-routing:
   max-prompt-chars: 4000
   default-tier: "balanced"
   # Also used for quota-exhausted users when quota-fallback is true.
-  fallback-model: "gemini-2.5-flash"
+  fallback-model: "gpt-5.6-luna"
   # Downgrade over-quota users to fallback-model instead of returning 429.
   quota-fallback: true
   tiers:
     cheap:
-      models: ["gemini-2.5-flash"]
+      models: ["gpt-5.6-luna"]
     balanced:
-      models: ["gpt-5.6", "claude-sonnet-5"]
+      models: ["gpt-5.6-terra", "claude-sonnet-5"]
     strong:
       models: ["claude-opus-5", "gpt-5.6-sol"]
   # semantic-router category -> tier label.
@@ -674,6 +676,15 @@ nonstream-keepalive-interval: 0
 #   codex:
 #     - name: "gpt-5"
 #       alias: "g5"
+#     - name: "gpt-5.6-sol"
+#       alias: "gpt-5.6-sol-fast"
+#       fork: true
+#     - name: "gpt-5.6-terra"
+#       alias: "gpt-5.6-terra-fast"
+#       fork: true
+#     - name: "gpt-5.6-luna"
+#       alias: "gpt-5.6-luna-fast"
+#       fork: true
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
@@ -731,6 +742,12 @@ nonstream-keepalive-interval: 0
 #         - name: "gpt-5.4-fast"
 #           protocol: "codex"
 #         - name: "gpt-5.5-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-sol-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-terra-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-luna-fast"
 #           protocol: "codex"
 #       params:
 #         service_tier: priority
