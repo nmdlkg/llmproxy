@@ -7,13 +7,14 @@ the short form of this document for a routine model-driven rebuild.
 
 Reference deployment:
 
-- service: system-level `cliproxyapi.service`, runs as `cliproxy:cliproxy`
+- service: system-level `cliproxyapi.service`, runs as `nobody:nogroup`
 - binary: `/opt/cliproxyapi/bin/cliproxyapi`
 - config: `/etc/cliproxyapi/config.yaml`
 - source: `/home/minis/workspace/llmproxy`
 
-The binary is owned by `nobody:nogroup` and only executed by the service user,
-so preserve that ownership on install rather than inventing a new one.
+The binary and service data are owned by `nobody:nogroup` and only executed by
+the service user, so preserve that ownership on install rather than inventing
+a new one.
 
 ## 1. Build
 
@@ -87,11 +88,57 @@ of duplicating top-level keys, and restart afterwards.
 sudo cp -a /etc/cliproxyapi/config.yaml \
   /etc/cliproxyapi/config.yaml.before-$(date +%F)
 sudo "$EDITOR" /etc/cliproxyapi/config.yaml
+sudo chown nobody:nogroup /etc/cliproxyapi/config.yaml
+sudo chmod 600 /etc/cliproxyapi/config.yaml
 sudo systemctl restart cliproxyapi.service
 ~~~
 
 `config.example.yaml` in the repository root is the reference for available
 keys. It is documentation, not the deployed file; nothing reads it at runtime.
+
+### Expose Codex Auto Review with Luna-class pricing
+
+`codex-auto-review` is present in the Codex model catalog for every supported
+plan. To broadcast it from the reference deployment, first remove any exact or
+glob entry under `oauth-excluded-models.codex` that matches
+`codex-auto-review`. Do not create an alias to another model: requests must keep
+the real upstream model ID.
+
+OpenAI's [Auto-review documentation](https://learn.chatgpt.com/docs/sandboxing/auto-review)
+describes this as a separate reviewer agent with a narrower task than the main
+agent. It does not identify an exact backing model in the current page text.
+For local cost estimation, treat it as a Luna-class model by merging this entry
+into the existing `openrouter.model-map` mapping:
+
+~~~yaml
+openrouter:
+  model-map:
+    "codex-auto-review": "openai/gpt-5.6-luna"
+~~~
+
+Remove any exact `codex-auto-review` entry from
+`tenancy.quota.model-price-overrides`; otherwise its fallback-only fields can
+mix with Luna catalog prices. This mapping affects accounting and benchmark
+lookup only. It does not rewrite the requested model or route Auto Review
+requests to Luna.
+
+After merging the changes, preserve ownership, restart, and verify that the
+running server broadcasts the exact model ID:
+
+~~~bash
+sudo chown nobody:nogroup /etc/cliproxyapi/config.yaml
+sudo chmod 600 /etc/cliproxyapi/config.yaml
+sudo systemctl restart cliproxyapi.service
+sudo systemctl is-active cliproxyapi.service
+curl -fsS -H "Authorization: Bearer $CLIPROXY_API_KEY" \
+  http://100.110.30.57:8317/v1/models |
+  jq -e '.data[] | select(.id == "codex-auto-review")'
+~~~
+
+A successful model-list check proves the model is broadcast. Confirm that its
+accounted token rates match `gpt-5.6-luna` separately in the user or admin usage
+view after a request. The Luna relationship is an explicit local pricing
+assumption, not a claim that both model IDs route to the same backend.
 
 ## 5. Rollback
 
