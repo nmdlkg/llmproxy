@@ -366,6 +366,11 @@ func (cfg *Config) SanitizeTenancyConfig() {
 		return
 	}
 	t := &cfg.Tenancy
+	t.UserPanel.GitHubRepository = strings.TrimSpace(t.UserPanel.GitHubRepository)
+	if t.UserPanel.GitHubRepository == "" {
+		t.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	}
+	t.UserPanel.PinnedVersion = strings.TrimSpace(t.UserPanel.PinnedVersion)
 	t.DBPath = strings.TrimSpace(t.DBPath)
 	t.ValidationInterval = strings.TrimSpace(t.ValidationInterval)
 	if t.ValidationInterval == "" {

@@ -1,16 +1,25 @@
 package user
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/userpanelasset"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 type oauthHandlers interface {
@@ -23,14 +32,28 @@ type oauthHandlers interface {
 	GetAuthStatus(*gin.Context)
 }
 
+// UserPanelAsset is the small manager surface needed by the admin UI routes.
+// Keeping this interface here avoids coupling the tenancy handler to updater
+// internals and makes route tests deterministic.
+type UserPanelAsset interface {
+	Status() userpanelasset.Status
+	Refresh(context.Context) error
+}
+
 // Handler serves tenancy-scoped user operations.
 type Handler struct {
-	cfg          *config.Config
-	authManager  *coreauth.Manager
-	service      *tenancy.Service
-	tokenStore   coreauth.Store
-	oauth        oauthHandlers
-	credentialMu sync.Mutex
+	cfg             *config.Config
+	authManager     *coreauth.Manager
+	service         *tenancy.Service
+	tokenStore      coreauth.Store
+	oauth           oauthHandlers
+	panel           UserPanelAsset
+	credentialMu    sync.Mutex
+	quotaMu         sync.Mutex
+	quotaCache      map[string]providerQuotaCacheEntry
+	quotaFetches    singleflight.Group
+	quotaSlotMu     sync.Mutex
+	quotaFetchSlots chan struct{}
 }
 
 // NewHandler creates the user API handler from the active server services.
@@ -47,12 +70,37 @@ func NewHandler(
 		}
 	}
 	return &Handler{
-		cfg:         cfg,
-		authManager: authManager,
-		service:     service,
-		tokenStore:  tokenStore,
-		oauth:       oauth,
+		cfg:             cfg,
+		authManager:     authManager,
+		service:         service,
+		tokenStore:      tokenStore,
+		oauth:           oauth,
+		quotaCache:      make(map[string]providerQuotaCacheEntry),
+		quotaFetchSlots: make(chan struct{}, providerQuotaParallel),
 	}
+}
+
+// SetConfig updates the live config snapshot used by user operations after a
+// server hot reload.
+func (h *Handler) SetConfig(cfg *config.Config) {
+	if h == nil || cfg == nil {
+		return
+	}
+	h.cfg = cfg
+	if h.tokenStore != nil {
+		if baseDirSetter, ok := h.tokenStore.(interface{ SetBaseDir(string) }); ok {
+			baseDirSetter.SetBaseDir(cfg.AuthDir)
+		}
+	}
+}
+
+// SetUserPanelAsset attaches the instance-owned panel manager to the admin
+// routes. Passing nil leaves the routes absent.
+func (h *Handler) SetUserPanelAsset(panel UserPanelAsset) {
+	if h == nil {
+		return
+	}
+	h.panel = panel
 }
 
 // RegisterRoutes attaches user routes only when tenancy is enabled.
@@ -82,9 +130,11 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine, authMiddleware gin.HandlerF
 		group.GET("/auth-status", h.GetAuthStatus)
 
 		group.GET("/usage", h.GetUsage)
+		group.GET("/provider-quotas", h.GetProviderQuotas)
 		group.GET("/api-keys", h.ListAPIKeys)
-		group.POST("/api-keys", h.IssueAPIKey)
+		group.POST("/api-keys", h.RegisterAPIKeyHash)
 		group.DELETE("/api-keys", h.DeleteAPIKey)
+		group.DELETE("/api-keys/:hash", h.DeleteAPIKey)
 
 		admin := group.Group("/admin")
 		admin.Use(h.requireAdmin())
@@ -93,9 +143,120 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine, authMiddleware gin.HandlerF
 			admin.POST("/users", h.CreateUser)
 			admin.PATCH("/users/:id", h.UpdateUser)
 			admin.DELETE("/users/:id", h.DeleteUser)
+			admin.DELETE("/users/:id/api-keys/:hash", h.RevokeUserAPIKey)
 			admin.GET("/usage", h.ListUsageByUser)
+			if h.panel != nil {
+				admin.GET("/ui/status", h.GetUserPanelUIStatus)
+				admin.POST("/ui/refresh", h.RefreshUserPanelUI)
+			}
 		}
 	}
+}
+
+// GetUserPanelUIStatus returns local updater state without network I/O.
+func (h *Handler) GetUserPanelUIStatus(c *gin.Context) {
+	if h == nil || h.panel == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.JSON(http.StatusOK, h.panel.Status())
+}
+
+// RefreshUserPanelUI manually requests a signed panel update. This endpoint is
+// deliberately strict: the only accepted request body is the JSON object {}.
+func (h *Handler) RefreshUserPanelUI(c *gin.Context) {
+	if h == nil || h.panel == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if errAuth := requireBearerAuth(c); errAuth != nil {
+		c.Header("WWW-Authenticate", "Bearer")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": errAuth.Error()})
+		return
+	}
+	if errContentType := requireJSONContentType(c); errContentType != nil {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": errContentType.Error()})
+		return
+	}
+	if errBody := requireEmptyJSONBody(c); errBody != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errBody.Error()})
+		return
+	}
+	errRefresh := h.panel.Refresh(c.Request.Context())
+	if errRefresh == nil {
+		c.JSON(http.StatusOK, h.panel.Status())
+		return
+	}
+	if errors.Is(errRefresh, userpanelasset.ErrRefreshThrottled) {
+		retryAfter := userpanelasset.RetryAfter(errRefresh)
+		seconds := int((retryAfter + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			seconds = 1
+		}
+		c.Header("Retry-After", strconv.Itoa(seconds))
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": errRefresh.Error(), "retry_after_seconds": seconds})
+		return
+	}
+	if errors.Is(errRefresh, userpanelasset.ErrRefreshBusy) {
+		c.JSON(http.StatusConflict, gin.H{"error": errRefresh.Error()})
+		return
+	}
+	if errors.Is(errRefresh, userpanelasset.ErrManualRefreshRequiresDevMode) || errors.Is(errRefresh, userpanelasset.ErrDevOverride) {
+		c.JSON(http.StatusConflict, gin.H{"error": errRefresh.Error()})
+		return
+	}
+	log.WithError(errRefresh).Warn("user panel manual refresh failed")
+	c.JSON(http.StatusBadGateway, gin.H{"error": "user panel refresh failed"})
+}
+
+func requireBearerAuth(c *gin.Context) error {
+	if c == nil || c.Request == nil {
+		return errors.New("request must use Bearer authentication")
+	}
+	authorization := strings.Fields(c.GetHeader("Authorization"))
+	if len(authorization) != 2 || !strings.EqualFold(authorization[0], "Bearer") || strings.TrimSpace(authorization[1]) == "" {
+		return errors.New("request must use Bearer authentication")
+	}
+	return nil
+}
+
+func requireJSONContentType(c *gin.Context) error {
+	if c == nil || c.Request == nil {
+		return errors.New("request Content-Type must be application/json")
+	}
+	mediaType, _, errMedia := mime.ParseMediaType(c.ContentType())
+	if errMedia != nil || !strings.EqualFold(mediaType, "application/json") {
+		return errors.New("request Content-Type must be application/json")
+	}
+	return nil
+}
+
+func requireEmptyJSONBody(c *gin.Context) error {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return errors.New("request body must be JSON {}")
+	}
+	limited := io.LimitReader(c.Request.Body, 4097)
+	body, errRead := io.ReadAll(limited)
+	if errRead != nil || len(body) > 4096 {
+		return errors.New("request body must be JSON {}")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var payload map[string]json.RawMessage
+	if errDecode := decoder.Decode(&payload); errDecode != nil || payload == nil {
+		if errDecode == nil {
+			return errors.New("request body must be JSON {}")
+		}
+		return errors.New("request body must be JSON {}")
+	}
+	if len(payload) != 0 {
+		return errors.New("request body must be JSON {}")
+	}
+	var trailing any
+	if errTrailing := decoder.Decode(&trailing); !errors.Is(errTrailing, io.EOF) {
+		return errors.New("request body must be JSON {}")
+	}
+	return nil
 }
 
 func (h *Handler) requireUser() gin.HandlerFunc {

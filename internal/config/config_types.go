@@ -190,6 +190,19 @@ type RemoteManagement struct {
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
 }
 
+// UserPanelConfig controls the externally maintained tenant user-panel asset
+// and its verified update channel.
+type UserPanelConfig struct {
+	// GitHubRepository is the GitHub repository containing signed panel releases.
+	GitHubRepository string `yaml:"github-repository" json:"github-repository"`
+	// PinnedVersion selects one exact semantic-versioned release when set.
+	PinnedVersion string `yaml:"pinned-version,omitempty" json:"pinned-version,omitempty"`
+	// DisableAutoUpdate disables scheduled and hot-reload-triggered updates.
+	DisableAutoUpdate bool `yaml:"disable-auto-update" json:"disable-auto-update"`
+	// DevMode enables development-only controls, including the manual refresh API.
+	DevMode bool `yaml:"dev-mode" json:"dev-mode"`
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {
@@ -612,6 +625,9 @@ type TenancyConfig struct {
 
 	// Balancing configures reset-window-aware credential preference.
 	Balancing TenancyBalancing `yaml:"balancing" json:"balancing"`
+
+	// UserPanel controls the tenant-facing web panel asset.
+	UserPanel UserPanelConfig `yaml:"user-panel" json:"user-panel"`
 
 	// Pricing is populated during config sanitization so the tenancy service can
 	// honor OpenRouter cost-basis settings without changing its server-owned

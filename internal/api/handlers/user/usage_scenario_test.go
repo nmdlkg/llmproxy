@@ -56,6 +56,18 @@ func TestGetUsageIsolatesUsers(t *testing.T) {
 	}
 
 	payload := decodeBody(t, response.Body.Bytes())
+	if payload["schema_version"] != float64(1) || payload["currency"] != "USD" {
+		t.Fatalf("usage contract identity = schema %v currency %v", payload["schema_version"], payload["currency"])
+	}
+	rangePayload, ok := payload["range"].(map[string]any)
+	if !ok || rangePayload["timezone"] != "UTC" {
+		t.Fatalf("usage range missing UTC contract: %v", payload["range"])
+	}
+	start, errStart := time.Parse(time.RFC3339, rangePayload["start"].(string))
+	end, errEnd := time.Parse(time.RFC3339, rangePayload["end"].(string))
+	if errStart != nil || errEnd != nil || !start.Before(end) {
+		t.Fatalf("usage range is not a valid half-open interval: start=%v end=%v errors=%v/%v", start, end, errStart, errEnd)
+	}
 	models, ok := payload["models"].([]any)
 	if !ok {
 		t.Fatalf("models missing from payload: %s", body)
@@ -69,6 +81,16 @@ func TestGetUsageIsolatesUsers(t *testing.T) {
 	}
 	if attempts, _ := totals["attempts"].(float64); attempts != 1 {
 		t.Errorf("totals.attempts = %v, want 1", totals["attempts"])
+	}
+	if cost, costIsString := totals["cost_nano_usd"].(string); !costIsString || cost != "900" {
+		t.Errorf("totals.cost_nano_usd = %#v, want exact integer string 900", totals["cost_nano_usd"])
+	}
+	model, modelOK := models[0].(map[string]any)
+	if !modelOK {
+		t.Fatalf("model row is not an object: %#v", models[0])
+	}
+	if cost, costIsString := model["cost_nano_usd"].(string); !costIsString || cost != "900" {
+		t.Errorf("model.cost_nano_usd = %#v, want exact integer string 900", model["cost_nano_usd"])
 	}
 }
 
@@ -84,8 +106,14 @@ func TestGetUsageEmptyStateReturnsOK(t *testing.T) {
 		t.Errorf("models = %v, want empty list", payload["models"])
 	}
 	daily, ok := payload["daily"].([]any)
-	if !ok || len(daily) != 0 {
-		t.Errorf("daily = %v, want empty list", payload["daily"])
+	if !ok || len(daily) == 0 {
+		t.Fatalf("daily = %v, want dense zero buckets", payload["daily"])
+	}
+	for _, raw := range daily {
+		row, rowOK := raw.(map[string]any)
+		if !rowOK || row["cost_nano_usd"] != "0" || row["attempts"] != float64(0) {
+			t.Errorf("daily row = %v, want zero-valued dense bucket", raw)
+		}
 	}
 }
 

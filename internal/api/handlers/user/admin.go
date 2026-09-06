@@ -34,10 +34,15 @@ func (h *Handler) CreateUser(c *gin.Context) {
 		Tier        string `json:"tier"`
 		Disabled    bool   `json:"disabled"`
 		IssueKey    *bool  `json:"issue_key"`
+		KeyHash     string `json:"key_hash"`
 		KeyLabel    string `json:"key_label"`
 	}
 	if errBind := c.ShouldBindJSON(&request); errBind != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if request.IssueKey != nil && *request.IssueKey && strings.TrimSpace(request.KeyHash) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash is required when issue_key is true"})
 		return
 	}
 	user := &tenancy.User{
@@ -56,19 +61,25 @@ func (h *Handler) CreateUser(c *gin.Context) {
 		return
 	}
 	response := gin.H{"user": userResponse(user)}
-	issueKey := request.IssueKey == nil || *request.IssueKey
-	if issueKey {
+	if strings.TrimSpace(request.KeyHash) != "" {
+		actor, _ := currentUser(c)
 		label := strings.TrimSpace(request.KeyLabel)
 		if label == "" {
 			label = "initial"
 		}
-		plaintext, key, errIssue := h.store().IssueAPIKey(user.ID, label)
-		if errIssue != nil {
+		key, errRegister := h.store().RegisterAPIKeyHashForActor(actor.ID, user.ID, request.KeyHash, label)
+		if errRegister != nil {
 			_ = h.store().DeleteUser(user.ID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue initial API key"})
+			switch {
+			case errors.Is(errRegister, tenancy.ErrInvalidAPIKeyHash):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash must be a lowercase 64-character SHA-256 hex string"})
+			case errors.Is(errRegister, tenancy.ErrAPIKeyRateLimit):
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "API key creation rate limit exceeded"})
+			default:
+				c.JSON(http.StatusConflict, gin.H{"error": "failed to register initial API key"})
+			}
 			return
 		}
-		response["api_key"] = plaintext
 		response["key"] = apiKeyResponse(*key)
 	}
 	c.JSON(http.StatusCreated, response)
@@ -134,6 +145,51 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 		return
 	}
 	h.invalidateQuota(targetID)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// RevokeUserAPIKey lets an administrator discard an initial browser-generated
+// key when Clipboard delivery fails. It never accepts or returns plaintext.
+func (h *Handler) RevokeUserAPIKey(c *gin.Context) {
+	targetID := strings.TrimSpace(c.Param("id"))
+	keyHash := strings.TrimSpace(c.Param("hash"))
+	if errValidate := tenancy.ValidateAPIKeyHash(keyHash); errValidate != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key hash is invalid"})
+		return
+	}
+	if _, errUser := h.store().GetUser(targetID); errUser != nil {
+		if errors.Is(errUser, tenancy.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+		return
+	}
+	keys, errList := h.store().ListAPIKeys(targetID)
+	if errList != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to inspect API key"})
+		return
+	}
+	owned := false
+	for _, key := range keys {
+		if key.KeyHash == keyHash && key.RevokedAt == nil {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+		return
+	}
+	if errRevoke := h.store().RevokeAPIKey(keyHash); errRevoke != nil {
+		if errors.Is(errRevoke, tenancy.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+			return
+		}
+		log.WithError(errRevoke).WithField("user_id", targetID).Error("user admin: revoke API key")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke API key"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 

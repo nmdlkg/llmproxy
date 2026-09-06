@@ -111,6 +111,7 @@ func (h *userTestHarness) request(t *testing.T, userID, method, path string, bod
 	request := httptest.NewRequest(method, path, bytes.NewReader(body))
 	if userID != "" {
 		request.Header.Set("X-Test-User", userID)
+		request.Header.Set("Authorization", "Bearer test-user-key")
 	}
 	if len(body) > 0 {
 		request.Header.Set("Content-Type", "application/json")
@@ -345,12 +346,15 @@ func TestAdminCreateUserInitialAPIKey(t *testing.T) {
 	harness := newUserTestHarness(t, true)
 
 	t.Run("issued when requested", func(t *testing.T) {
+		plaintext := "cp_u_admin-browser-owned"
+		keyHash := tenancy.HashAPIKey(plaintext)
 		response := harness.request(t, "admin", http.MethodPost, "/v0/user/admin/users", []byte(`{
 			"email":"new-user@example.com",
 			"display_name":"New User",
 			"role":"user",
 			"tier":"default",
 			"issue_key":true,
+			"key_hash":"`+keyHash+`",
 			"key_label":"first"
 		}`))
 		if response.Code != http.StatusCreated {
@@ -359,22 +363,25 @@ func TestAdminCreateUserInitialAPIKey(t *testing.T) {
 
 		var created struct {
 			APIKey string `json:"api_key"`
-			User   struct {
+			Key    struct {
+				Hash string `json:"hash"`
+			} `json:"key"`
+			User struct {
 				ID string `json:"id"`
 			} `json:"user"`
 		}
 		if errDecode := json.Unmarshal(response.Body.Bytes(), &created); errDecode != nil {
 			t.Fatalf("decode create response: %v", errDecode)
 		}
-		if created.APIKey == "" {
-			t.Fatalf("create response did not contain initial API key: %s", response.Body.String())
+		if created.APIKey != "" || created.Key.Hash != keyHash || strings.Contains(response.Body.String(), plaintext) {
+			t.Fatalf("create response did not remain hash-only: %s", response.Body.String())
 		}
 		keys, errList := harness.service.Store().ListAPIKeys(created.User.ID)
 		if errList != nil {
 			t.Fatalf("ListAPIKeys() error = %v", errList)
 		}
-		if len(keys) != 1 || keys[0].KeyHash != tenancy.HashAPIKey(created.APIKey) || keys[0].Label != "first" {
-			t.Fatalf("stored keys = %#v, plaintext = %q", keys, created.APIKey)
+		if len(keys) != 1 || keys[0].KeyHash != keyHash || keys[0].Label != "first" {
+			t.Fatalf("stored keys = %#v, want hash %q", keys, keyHash)
 		}
 	})
 
@@ -410,6 +417,28 @@ func TestAdminCreateUserInitialAPIKey(t *testing.T) {
 			t.Fatalf("stored keys = %#v, want none", keys)
 		}
 	})
+}
+
+func TestAdminUpdateUserFields(t *testing.T) {
+	harness := newUserTestHarness(t, true)
+	response := harness.request(t, "admin", http.MethodPatch, "/v0/user/admin/users/user-a", []byte(`{
+		"email":"renamed@example.com",
+		"display_name":"Renamed User",
+		"role":"admin",
+		"tier":"staff",
+		"disabled":true
+	}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	updated, errGet := harness.service.Store().GetUser("user-a")
+	if errGet != nil {
+		t.Fatalf("GetUser() error = %v", errGet)
+	}
+	if updated.Email != "renamed@example.com" || updated.DisplayName != "Renamed User" ||
+		updated.Role != tenancy.RoleAdmin || updated.Tier != "staff" || !updated.Disabled {
+		t.Fatalf("updated user = %#v", updated)
+	}
 }
 
 func TestTenancyDisabledLeavesUserRoutesAbsent(t *testing.T) {
@@ -449,9 +478,11 @@ func TestOAuthSessionIsBoundToInitiatingUser(t *testing.T) {
 	}
 }
 
-func TestAPIKeyIsReturnedOnceAndStoredAsHash(t *testing.T) {
+func TestAPIKeyHashIsRegisteredWithoutReturningPlaintext(t *testing.T) {
 	harness := newUserTestHarness(t, true)
-	issueResponse := harness.request(t, "user-a", http.MethodPost, "/v0/user/api-keys", []byte(`{"label":"laptop"}`))
+	plaintext := "cp_u_browser-owned-secret"
+	keyHash := tenancy.HashAPIKey(plaintext)
+	issueResponse := harness.request(t, "user-a", http.MethodPost, "/v0/user/api-keys", []byte(`{"label":"laptop","key_hash":"`+keyHash+`"}`))
 	if issueResponse.Code != http.StatusCreated {
 		t.Fatalf("issue status = %d, body = %s", issueResponse.Code, issueResponse.Body.String())
 	}
@@ -464,15 +495,15 @@ func TestAPIKeyIsReturnedOnceAndStoredAsHash(t *testing.T) {
 	if errDecode := json.Unmarshal(issueResponse.Body.Bytes(), &issued); errDecode != nil {
 		t.Fatalf("decode issue response: %v", errDecode)
 	}
-	if issued.APIKey == "" || issued.Key.Hash != tenancy.HashAPIKey(issued.APIKey) {
-		t.Fatalf("invalid plaintext/hash response: %#v", issued)
+	if issued.APIKey != "" || issued.Key.Hash != keyHash || strings.Contains(issueResponse.Body.String(), plaintext) {
+		t.Fatalf("response was not hash-only: %#v body=%s", issued, issueResponse.Body.String())
 	}
 	keys, errList := harness.service.Store().ListAPIKeys("user-a")
 	if errList != nil || len(keys) != 1 || keys[0].KeyHash != issued.Key.Hash {
 		t.Fatalf("stored keys = %#v, error = %v", keys, errList)
 	}
 	listResponse := harness.request(t, "user-a", http.MethodGet, "/v0/user/api-keys", nil)
-	if strings.Contains(listResponse.Body.String(), issued.APIKey) {
+	if strings.Contains(listResponse.Body.String(), plaintext) {
 		t.Fatalf("plaintext key returned by list: %s", listResponse.Body.String())
 	}
 
