@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/authfiles"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
@@ -166,7 +167,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
 			return
 		}
 
@@ -314,7 +315,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
 			return
 		}
@@ -481,7 +482,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			log.Errorf("Failed to save token to file: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save token to file")
+			SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
 			return
 		}
 
@@ -588,7 +589,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			log.Errorf("Failed to save xAI token to file: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save token to file")
+			SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
 			return
 		}
 
@@ -686,7 +687,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
-			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
 			return
 		}
 
@@ -803,8 +804,8 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 				}
 				if errSave := h.savePluginLoginRecords(ctx, records); errSave != nil {
 					log.WithError(errSave).WithField("provider", provider).Error("failed to save plugin auth tokens")
-					SetOAuthSessionError(state, "Failed to save authentication tokens")
-					c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Failed to save authentication tokens"})
+					SetOAuthSessionError(state, authfiles.OAuthSaveError(errSave))
+					c.JSON(http.StatusOK, gin.H{"status": "error", "error": authfiles.OAuthSaveError(errSave)})
 					return
 				}
 				CompleteOAuthSession(state)
