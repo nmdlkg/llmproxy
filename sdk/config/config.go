@@ -13,6 +13,7 @@ type Config = internalconfig.Config
 type StreamingConfig = internalconfig.StreamingConfig
 type TLSConfig = internalconfig.TLSConfig
 type RemoteManagement = internalconfig.RemoteManagement
+type UserPanelConfig = internalconfig.UserPanelConfig
 type OAuthModelAlias = internalconfig.OAuthModelAlias
 type PayloadConfig = internalconfig.PayloadConfig
 type PayloadRule = internalconfig.PayloadRule
@@ -33,7 +34,8 @@ type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type TLS = internalconfig.TLSConfig
 
 const (
-	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
+	DefaultPanelGitHubRepository     = internalconfig.DefaultPanelGitHubRepository
+	DefaultUserPanelGitHubRepository = internalconfig.DefaultUserPanelGitHubRepository
 )
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }

@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/userpanel"
 )
 
 func (s *Server) registerUserRoutes() {
@@ -12,7 +11,11 @@ func (s *Server) registerUserRoutes() {
 		return
 	}
 	s.engine.GET("/user", func(c *gin.Context) {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", userpanel.HTML())
+		if s.userPanelAsset == nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		s.userPanelAsset.ServeHTTP(c.Writer, c.Request)
 	})
 	s.user.RegisterRoutes(s.engine, AuthMiddleware(s.accessManager))
 }

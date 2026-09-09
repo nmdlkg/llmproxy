@@ -1,0 +1,18 @@
+[Unit]
+Description=CLIProxyAPI isolated staging for %i
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=nobody
+Group=nogroup
+ExecStart=/usr/bin/python3 /usr/local/lib/cliproxy-deploy/smoke.py /var/lib/cliproxyapi-staging/%i/artifacts /var/lib/cliproxyapi-staging/%i/work
+TimeoutStartSec=120
+PrivateNetwork=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cliproxyapi-staging/%i/work
+InaccessiblePaths=/opt/cliproxyapi/releases /etc/cliproxyapi /var/lib/cliproxyapi /var/lib/cliproxy-deploy
+UMask=0077

@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore the previous CLIProxyAPI release after interrupted deployment
+After=local-fs.target
+Before=cliproxyapi.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/cliproxy-deploy/rollout.py recover-boot
+RemainAfterExit=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

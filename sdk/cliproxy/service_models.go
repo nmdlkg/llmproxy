@@ -117,18 +117,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if a.Attributes != nil {
 			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
 		}
-		switch strings.ToLower(codexPlanType) {
-		case "pro":
-			models = registry.GetCodexProModels()
-		case "plus":
-			models = registry.GetCodexPlusModels()
-		case "team", "business", "go":
-			models = registry.GetCodexTeamModels()
-		case "free":
-			models = registry.GetCodexFreeModels()
-		default:
-			models = registry.GetCodexProModels()
-		}
+		models = codexModelsForPlan(codexPlanType, authKind)
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)
@@ -270,6 +259,58 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+}
+
+const codexAstraModelID = "gpt-6-astra"
+
+// codexModelsForPlan selects a conservative model catalog for the account's
+// Codex plan. The upstream model catalog is shared across plan sections, so
+// early-access models need an explicit plan gate here.
+func codexModelsForPlan(planType, authKind string) []*registry.ModelInfo {
+	plan := strings.ToLower(strings.TrimSpace(planType))
+	switch plan {
+	case "free":
+		return registry.GetCodexFreeModels()
+	case "plus":
+		return excludeCodexModels(registry.GetCodexPlusModels(), codexAstraModelID)
+	case "edu", "edu_plus", "edu_pro", "education", "k12":
+		return excludeCodexModels(registry.GetCodexPlusModels(), codexAstraModelID)
+	case "prolite", "pro":
+		return registry.GetCodexProModels()
+	case "team", "business", "go", "enterprise", "finserv", "hc", "quorum", "sci":
+		return registry.GetCodexTeamModels()
+	default:
+		// API-key credentials do not carry a subscription plan. Preserve the
+		// previous behavior for those credentials while keeping unknown OAuth
+		// plans from receiving early-access models accidentally.
+		if strings.EqualFold(strings.TrimSpace(authKind), "apikey") {
+			return registry.GetCodexProModels()
+		}
+		return excludeCodexModels(registry.GetCodexPlusModels(), codexAstraModelID)
+	}
+}
+
+func excludeCodexModels(models []*registry.ModelInfo, excludedIDs ...string) []*registry.ModelInfo {
+	if len(models) == 0 || len(excludedIDs) == 0 {
+		return models
+	}
+
+	excluded := make(map[string]struct{}, len(excludedIDs))
+	for _, id := range excludedIDs {
+		excluded[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
+	}
+
+	filtered := make([]*registry.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if _, blocked := excluded[strings.ToLower(strings.TrimSpace(model.ID))]; blocked {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+	return filtered
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

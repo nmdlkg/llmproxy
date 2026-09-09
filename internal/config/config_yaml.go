@@ -330,6 +330,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == DefaultPprofAddr
 		case "remote-management.panel-github-repository":
 			return node.Value == DefaultPanelGitHubRepository
+		case "tenancy.user-panel.github-repository":
+			return node.Value == DefaultUserPanelGitHubRepository
 		case "plugins.dir":
 			return node.Value == "plugins"
 		case "routing.strategy":

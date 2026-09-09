@@ -157,7 +157,9 @@ proxy-url: ""
 # benchmark-source below have no effect, so quota falls back to
 # model-price-overrides and auto-routing keeps the configured tier order.
 openrouter:
-  enabled: false
+  # Master switch. Set together with cost-basis: openrouter below; while this is
+  # false the catalog is inert and cost-basis has no effect.
+  enabled: true
   # Required only for benchmarks. When empty, OPENROUTER_API_KEY is used.
   api-key: ""
   base-url: "https://openrouter.ai/api/v1"
@@ -166,9 +168,31 @@ openrouter:
   # unique case-insensitive/vendor-prefix/date-suffix matching.
   model-map:
     "gemini-2.5-flash": "google/gemini-2.5-flash"
+    # Models this deployment actually serves. Without a mapping the catalog
+    # price is unknown and costing silently falls back to the overrides below.
+    # Every target below was verified to exist in the live catalog; a target
+    # that does not exist prices as unknown and is therefore worse than useless.
+    "claude-opus-5": "anthropic/claude-opus-5"
+    "claude-fable-5-1": "anthropic/claude-fable-5.1"
+    "claude-sonnet-5": "anthropic/claude-sonnet-5"
+    "gpt-5.6-sol": "openai/gpt-5.6-sol"
+    "gpt-5.6-luna": "openai/gpt-5.6-luna"
+    "gpt-5.6-terra": "openai/gpt-5.6-terra"
+    "claude-opus-4-8": "anthropic/claude-opus-4.8"
+    "claude-opus-4-7": "anthropic/claude-opus-4.7"
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6"
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5"
+    # Aliases with no catalog entry of their own are priced as the model they
+    # run on. Without these the tokens are counted but never priced.
+    # Auto Review is a separate, narrow reviewer; use Luna as the local model
+    # class for cost estimation, not as a routing alias or backend identity.
+    "codex-auto-review": "openai/gpt-5.6-luna"
+    "gpt-5.3-codex-spark": "openai/gpt-5.3-codex"
+    "gpt-5.5-fast": "openai/gpt-5.5"
+    "gpt-5.4-mini-fast": "openai/gpt-5.4-mini"
   # static uses only tenancy.quota.model-price-overrides. openrouter uses
   # catalog prices first and those overrides to fill missing fields/models.
-  cost-basis: "static"
+  cost-basis: "openrouter"
   # Empty disables benchmark ranking. Other values: artificial-analysis, design-arena.
   benchmark-source: ""
 
@@ -188,14 +212,14 @@ auto-routing:
   max-prompt-chars: 4000
   default-tier: "balanced"
   # Also used for quota-exhausted users when quota-fallback is true.
-  fallback-model: "gemini-2.5-flash"
+  fallback-model: "gpt-5.6-luna"
   # Downgrade over-quota users to fallback-model instead of returning 429.
   quota-fallback: true
   tiers:
     cheap:
-      models: ["gemini-2.5-flash"]
+      models: ["gpt-5.6-luna"]
     balanced:
-      models: ["gpt-5.6", "claude-sonnet-5"]
+      models: ["gpt-5.6-terra", "claude-sonnet-5"]
     strong:
       models: ["claude-opus-5", "gpt-5.6-sol"]
   # semantic-router category -> tier label.
@@ -213,7 +237,22 @@ auto-routing:
 # top-level keys owner_user_id / shared / contribution_tier, so it survives a
 # lost database and works with every auth store backend.
 tenancy:
-  enabled: false
+  enabled: true
+
+  # The user panel is maintained in the separate CLIProxyAPI-User-Panel
+  # repository. Local development builds are served through USER_PANEL_STATIC_PATH;
+  # published releases are signed and verified before they are cached on disk.
+  user-panel:
+    github-repository: "https://github.com/nmdlkg/CLIProxyAPI-User-Panel"
+    # Optional exact semver release. Empty selects the newest stable release.
+    # Pins below the cache high-water floor are rejected.
+    pinned-version: ""
+    disable-auto-update: false
+    # Enables the role-admin manual refresh endpoint. USER_PANEL_DEV_MODE can
+    # override this value for a process-local development deployment. When
+    # USER_PANEL_STATIC_PATH is set, /user reads that local user.html on every
+    # request and all remote updates are disabled.
+    dev-mode: false
   # Empty defaults to <auth-dir>/../tenancy.db
   db-path: ""
   # How often a user's own credential is softly preferred for their request, so
@@ -255,8 +294,9 @@ tenancy:
         default: 5.0
     # Required token prices in the industry-standard $ per 1M tokens.
     # Under static cost-basis these are the only prices. Under openrouter they
-    # fill catalog gaps. Keep "*" as a non-zero last-resort floor so unmatched
-    # local models never become silently free; add exact entries where known.
+    # fill catalog gaps only: a catalog price that is present and explicitly
+    # zero still wins, so "*" is a fallback for UNPRICED models, not a floor
+    # that overrides a published zero. Add exact entries where known.
     model-price-overrides:
       "*":
         prompt: 0.075
@@ -652,6 +692,15 @@ nonstream-keepalive-interval: 0
 #   codex:
 #     - name: "gpt-5"
 #       alias: "g5"
+#     - name: "gpt-5.6-sol"
+#       alias: "gpt-5.6-sol-fast"
+#       fork: true
+#     - name: "gpt-5.6-terra"
+#       alias: "gpt-5.6-terra-fast"
+#       fork: true
+#     - name: "gpt-5.6-luna"
+#       alias: "gpt-5.6-luna-fast"
+#       fork: true
 #   kimi:
 #     - name: "kimi-k2.5"
 #       alias: "k2.5"
@@ -709,6 +758,12 @@ nonstream-keepalive-interval: 0
 #         - name: "gpt-5.4-fast"
 #           protocol: "codex"
 #         - name: "gpt-5.5-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-sol-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-terra-fast"
+#           protocol: "codex"
+#         - name: "gpt-5.6-luna-fast"
 #           protocol: "codex"
 #       params:
 #         service_tier: priority

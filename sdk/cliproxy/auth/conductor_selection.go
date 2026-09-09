@@ -382,6 +382,7 @@ func schedulerAuthCandidates(auths []*Auth) []pluginapi.SchedulerAuthCandidate {
 			Priority:   authPriority(auth),
 			Status:     string(auth.Status),
 			Attributes: schedulerSafeAttributes(auth.Attributes),
+			Metadata:   schedulerSharingMetadata(auth.Metadata),
 		})
 	}
 	return out
