@@ -30,6 +30,20 @@ such as ~/.config/cliproxyapi for a system service.
   trusted shell; never request a sudo password in chat. Sandbox approval does
   not supply OS-level sudo authentication.
 
+## Onboarding checklist
+
+For a new deployment or handover:
+
+1. Confirm the systemd unit's `User`, `ExecStart`, and `--config` values.
+2. Back up the live config before enabling tenancy or changing mappings.
+3. Ensure the service account can read the config and `auths/`, with no
+   group- or world-readable secret files.
+4. Enable `tenancy.enabled`, restart, and verify `/healthz`.
+5. Create the administrator in section 1, then regular users in section 2.
+
+For an existing deployment, begin with the read-only systemd check in section 3
+and record the actual paths before making changes.
+
 ## 1. Bootstrap or recover an admin
 
 Enable tenancy.enabled in the system config, then stop the service:

@@ -30,13 +30,13 @@ func RedactSensitiveLogBody(body []byte) []byte {
 	if len(body) == 0 {
 		return body
 	}
-	if !logCredentialPattern.Match(body) && !logBearerPattern.Match(body) && !logSensitiveField.Match(body) {
-		return body
-	}
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if errDecode := decoder.Decode(&value); errDecode == nil {
+		if !containsSensitiveLogField(value) && !logCredentialPattern.Match(body) && !logBearerPattern.Match(body) {
+			return body
+		}
 		value = redactSensitiveLogJSONValue(value)
 		if encoded, errMarshal := json.Marshal(value); errMarshal == nil {
 			return []byte(RedactSensitiveLogText(string(encoded)))
@@ -75,4 +75,22 @@ func isSensitiveLogField(key string) bool {
 		strings.Contains(normalized, "key_hash") ||
 		strings.Contains(normalized, "token") ||
 		strings.Contains(normalized, "secret")
+}
+
+func containsSensitiveLogField(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if isSensitiveLogField(key) || containsSensitiveLogField(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsSensitiveLogField(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
