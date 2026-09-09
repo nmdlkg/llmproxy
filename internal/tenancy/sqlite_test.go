@@ -55,6 +55,7 @@ func TestSQLiteSchemaIsIdempotent(t *testing.T) {
 		t.Fatalf("close schema rows: %v", errRows)
 	}
 	want := []string{
+		"api_key_registration_attempts",
 		"credential_validation",
 		"quota_windows",
 		"usage_ledger",
@@ -66,11 +67,14 @@ func TestSQLiteSchemaIsIdempotent(t *testing.T) {
 	}
 
 	expectedColumns := map[string][]string{
+		"api_key_registration_attempts": {
+			"actor_id", "attempted_at",
+		},
 		"users": {
 			"id", "email", "display_name", "role", "tier", "disabled", "created_at", "updated_at",
 		},
 		"user_api_keys": {
-			"key_hash", "user_id", "label", "created_at", "last_used_at", "revoked_at",
+			"key_hash", "user_id", "created_by", "label", "created_at", "last_used_at", "revoked_at",
 		},
 		"usage_ledger": {
 			"id", "user_id", "auth_id", "provider", "model", "cost_nano_usd",

@@ -1,0 +1,11 @@
+[Unit]
+Description=CLIProxyAPI monitored rollout for %i
+After=network-online.target
+OnFailure=cliproxyapi-deploy-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/cliproxy-deploy/rollout.py promote %i
+TimeoutStartSec=600
+TimeoutStopSec=120
+UMask=0077

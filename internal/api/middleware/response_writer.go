@@ -5,6 +5,7 @@ package middleware
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -207,7 +208,13 @@ func (w *ResponseWriterWrapper) captureCurrentHeaders() {
 	for key, values := range w.ResponseWriter.Header() {
 		// Make a copy of the values slice to avoid reference issues
 		headerValues := make([]string, len(values))
-		copy(headerValues, values)
+		for index, value := range values {
+			if isSensitiveRequestLogHeader(key) {
+				headerValues[index] = redactedRequestLogValue
+			} else {
+				headerValues[index] = value
+			}
+		}
 		w.headers[key] = headerValues
 	}
 }
@@ -279,7 +286,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	apiResponseError, isExist := c.Get("API_RESPONSE_ERROR")
 	if isExist {
 		if apiErrors, ok := apiResponseError.([]*interfaces.ErrorMessage); ok {
-			slicesAPIResponseError = apiErrors
+			slicesAPIResponseError = redactAPIResponseErrors(apiErrors)
 		}
 	}
 
@@ -372,6 +379,25 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.extractResponseBody(c), w.extractWebsocketTimeline(c), websocketTimelineSource, apiRequest, apiRequestSource, w.extractAPIResponse(c), apiResponseSource, w.extractAPIWebsocketTimeline(c), apiWebsocketTimelineSource, w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
 }
 
+func redactAPIResponseErrors(apiErrors []*interfaces.ErrorMessage) []*interfaces.ErrorMessage {
+	if len(apiErrors) == 0 {
+		return nil
+	}
+	redacted := make([]*interfaces.ErrorMessage, 0, len(apiErrors))
+	for _, apiError := range apiErrors {
+		if apiError == nil {
+			redacted = append(redacted, nil)
+			continue
+		}
+		copyError := *apiError
+		if apiError.Error != nil {
+			copyError.Error = errors.New(redactRequestLogText(apiError.Error.Error()))
+		}
+		redacted = append(redacted, &copyError)
+	}
+	return redacted
+}
+
 func (w *ResponseWriterWrapper) cloneHeaders() map[string][]string {
 	w.ensureHeadersCaptured()
 
@@ -394,7 +420,7 @@ func (w *ResponseWriterWrapper) extractAPIRequest(c *gin.Context) []byte {
 	if !ok || len(data) == 0 {
 		return nil
 	}
-	return data
+	return redactRequestLogBody(data)
 }
 
 func (w *ResponseWriterWrapper) extractDeferredAPIRequest(c *gin.Context) []byte {
@@ -416,7 +442,7 @@ func (w *ResponseWriterWrapper) extractDeferredAPIRequest(c *gin.Context) []byte
 		}
 		body.Write(buildRequest())
 	}
-	return body.Bytes()
+	return redactRequestLogBody(body.Bytes())
 }
 
 func (w *ResponseWriterWrapper) extractAPIResponse(c *gin.Context) []byte {
@@ -428,7 +454,7 @@ func (w *ResponseWriterWrapper) extractAPIResponse(c *gin.Context) []byte {
 	if !ok || len(data) == 0 {
 		return nil
 	}
-	return data
+	return redactRequestLogBody(data)
 }
 
 func (w *ResponseWriterWrapper) extractAPIRequestSource(c *gin.Context) *logging.FileBodySource {
@@ -448,7 +474,7 @@ func (w *ResponseWriterWrapper) extractAPIWebsocketTimeline(c *gin.Context) []by
 	if !ok || len(data) == 0 {
 		return nil
 	}
-	return bytes.Clone(data)
+	return redactRequestLogBody(bytes.Clone(data))
 }
 
 func (w *ResponseWriterWrapper) extractAPIWebsocketTimelineSource(c *gin.Context) *logging.FileBodySource {
@@ -468,13 +494,13 @@ func (w *ResponseWriterWrapper) extractAPIResponseTimestamp(c *gin.Context) time
 
 func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 	if body := extractBodyOverride(c, requestBodyOverrideContextKey); len(body) > 0 {
-		return body
+		return redactRequestLogBody(body)
 	}
 	if w.requestInfo == nil {
 		return nil
 	}
 	if len(w.requestInfo.Body) > 0 {
-		return w.requestInfo.Body
+		return redactRequestLogBody(w.requestInfo.Body)
 	}
 	if w.requestInfo.deferredBodyCapture == nil {
 		return nil
@@ -492,6 +518,7 @@ func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 		}
 	}
 	body = decodeCapturedRequestBodyForLogWithLimit(body, encoding, maxDeferredErrorRequestBodyBytes)
+	body = redactRequestLogBody(body)
 	if statusMarker == "" {
 		return body
 	}
@@ -503,16 +530,16 @@ func (w *ResponseWriterWrapper) extractRequestBody(c *gin.Context) []byte {
 
 func (w *ResponseWriterWrapper) extractResponseBody(c *gin.Context) []byte {
 	if body := extractBodyOverride(c, responseBodyOverrideContextKey); len(body) > 0 {
-		return body
+		return redactRequestLogBody(body)
 	}
 	if w.body == nil || w.body.Len() == 0 {
 		return nil
 	}
-	return bytes.Clone(w.body.Bytes())
+	return redactRequestLogBody(bytes.Clone(w.body.Bytes()))
 }
 
 func (w *ResponseWriterWrapper) extractWebsocketTimeline(c *gin.Context) []byte {
-	return extractBodyOverride(c, websocketTimelineOverrideContextKey)
+	return redactRequestLogBody(extractBodyOverride(c, websocketTimelineOverrideContextKey))
 }
 
 func (w *ResponseWriterWrapper) extractWebsocketTimelineSource(c *gin.Context) *logging.FileBodySource {

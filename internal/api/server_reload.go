@@ -119,6 +119,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
+	if s.tenancyService != nil {
+		if err := s.tenancyService.SetConfig(cfg.Tenancy); err != nil { log.Errorf("failed to reconfigure tenancy quota: %v", err) }
+	}
 
 	// Update log level dynamically when debug flag changes
 	if oldCfg == nil || oldCfg.Debug != cfg.Debug {
@@ -177,6 +180,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
 	}
 	managementasset.SetCurrentConfig(cfg)
+	if s.userPanelSupervisor != nil {
+		s.userPanelSupervisor.SetConfig(cfg)
+	}
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
@@ -194,6 +200,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
 		s.mgmt.SetPluginHost(s.pluginHost)
+	}
+	if s.user != nil {
+		s.user.SetConfig(cfg)
 	}
 	s.refreshPluginManagementRoutes()
 

@@ -65,6 +65,7 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if cfg == nil || cfg.CommercialMode {
 		return
 	}
+	info.Body = util.RedactSensitiveLogBody(info.Body)
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
 		return
@@ -477,6 +478,7 @@ func writeAttemptResponse(ginCtx *gin.Context, attempt *upstreamAttempt, payload
 	if attempt == nil || len(payload) == 0 {
 		return
 	}
+	payload = util.RedactSensitiveLogBody(payload)
 	if attempt.responseSource == nil {
 		attempt.responseSource = apiResponseSourceOrNil(ginCtx)
 	}
@@ -555,7 +557,7 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 	if ginCtx == nil {
 		return
 	}
-	data := bytes.TrimSpace(chunk)
+	data := bytes.TrimSpace(util.RedactSensitiveLogBody(chunk))
 	if len(data) == 0 {
 		return
 	}

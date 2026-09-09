@@ -3,7 +3,9 @@ package user
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
@@ -32,10 +34,15 @@ func (h *Handler) CreateUser(c *gin.Context) {
 		Tier        string `json:"tier"`
 		Disabled    bool   `json:"disabled"`
 		IssueKey    *bool  `json:"issue_key"`
+		KeyHash     string `json:"key_hash"`
 		KeyLabel    string `json:"key_label"`
 	}
 	if errBind := c.ShouldBindJSON(&request); errBind != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if request.IssueKey != nil && *request.IssueKey && strings.TrimSpace(request.KeyHash) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash is required when issue_key is true"})
 		return
 	}
 	user := &tenancy.User{
@@ -54,19 +61,25 @@ func (h *Handler) CreateUser(c *gin.Context) {
 		return
 	}
 	response := gin.H{"user": userResponse(user)}
-	issueKey := request.IssueKey == nil || *request.IssueKey
-	if issueKey {
+	if strings.TrimSpace(request.KeyHash) != "" {
+		actor, _ := currentUser(c)
 		label := strings.TrimSpace(request.KeyLabel)
 		if label == "" {
 			label = "initial"
 		}
-		plaintext, key, errIssue := h.store().IssueAPIKey(user.ID, label)
-		if errIssue != nil {
+		key, errRegister := h.store().RegisterAPIKeyHashForActor(actor.ID, user.ID, request.KeyHash, label)
+		if errRegister != nil {
 			_ = h.store().DeleteUser(user.ID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue initial API key"})
+			switch {
+			case errors.Is(errRegister, tenancy.ErrInvalidAPIKeyHash):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash must be a lowercase 64-character SHA-256 hex string"})
+			case errors.Is(errRegister, tenancy.ErrAPIKeyRateLimit):
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "API key creation rate limit exceeded"})
+			default:
+				c.JSON(http.StatusConflict, gin.H{"error": "failed to register initial API key"})
+			}
 			return
 		}
-		response["api_key"] = plaintext
 		response["key"] = apiKeyResponse(*key)
 	}
 	c.JSON(http.StatusCreated, response)
@@ -135,6 +148,51 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// RevokeUserAPIKey lets an administrator discard an initial browser-generated
+// key when Clipboard delivery fails. It never accepts or returns plaintext.
+func (h *Handler) RevokeUserAPIKey(c *gin.Context) {
+	targetID := strings.TrimSpace(c.Param("id"))
+	keyHash := strings.TrimSpace(c.Param("hash"))
+	if errValidate := tenancy.ValidateAPIKeyHash(keyHash); errValidate != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key hash is invalid"})
+		return
+	}
+	if _, errUser := h.store().GetUser(targetID); errUser != nil {
+		if errors.Is(errUser, tenancy.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+		return
+	}
+	keys, errList := h.store().ListAPIKeys(targetID)
+	if errList != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to inspect API key"})
+		return
+	}
+	owned := false
+	for _, key := range keys {
+		if key.KeyHash == keyHash && key.RevokedAt == nil {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+		return
+	}
+	if errRevoke := h.store().RevokeAPIKey(keyHash); errRevoke != nil {
+		if errors.Is(errRevoke, tenancy.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+			return
+		}
+		log.WithError(errRevoke).WithField("user_id", targetID).Error("user admin: revoke API key")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke API key"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 func userResponse(user *tenancy.User) gin.H {
 	if user == nil {
 		return nil
@@ -149,4 +207,71 @@ func userResponse(user *tenancy.User) gin.H {
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
+}
+
+// ListUsageByUser reports per-user consumption for the current quota window.
+// It exposes aggregates only: no credential identifiers and no request rows.
+func (h *Handler) ListUsageByUser(c *gin.Context) {
+	ctx := c.Request.Context()
+	users, errUsers := h.store().ListUsers()
+	if errUsers != nil {
+		log.WithError(errUsers).Error("admin usage: list users")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
+		return
+	}
+	window := quotaWindow(h.cfg)
+	until := time.Now().UTC()
+	since := until.Add(-window)
+	stats, errStats := h.store().UsageByUser(ctx, since, until)
+	if errStats != nil {
+		log.WithError(errStats).Error("admin usage: aggregate usage")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load usage"})
+		return
+	}
+	byUser := make(map[string]tenancy.UsageUserStat, len(stats))
+	for _, stat := range stats {
+		byUser[stat.UserID] = stat
+	}
+	// Start from the user list so users with no usage still appear.
+	items := make([]gin.H, 0, len(users))
+	for _, user := range users {
+		stat := byUser[user.ID]
+		item := gin.H{
+			"id":              user.ID,
+			"email":           user.Email,
+			"tier":            user.Tier,
+			"role":            user.Role,
+			"disabled":        user.Disabled,
+			"used":            tenancy.FormatNanoUSD(stat.CostNanoUSD),
+			"input_tokens":    stat.InputTokens,
+			"output_tokens":   stat.OutputTokens,
+			"attempts":        stat.Attempts,
+			"failed_attempts": stat.FailedAttempts,
+		}
+		if h.service != nil && h.service.Quota() != nil {
+			if limit, errLimit := h.service.Quota().Limit(user.ID); errLimit == nil {
+				item["limit"] = tenancy.FormatNanoUSD(limit)
+				if limit > 0 {
+					item["utilization"] = float64(stat.CostNanoUSD) / float64(limit)
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(first, second int) bool {
+		return usageUtilization(items[first]) > usageUtilization(items[second])
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"window":       window.String(),
+		"window_start": since,
+		"users":        items,
+	})
+}
+
+// usageUtilization reads the optional utilization value for admin sorting.
+func usageUtilization(item gin.H) float64 {
+	if value, ok := item["utilization"].(float64); ok {
+		return value
+	}
+	return 0
 }

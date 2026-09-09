@@ -32,6 +32,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -56,6 +57,11 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
+	cfg.Tenancy.UserPanel.GitHubRepository = strings.TrimSpace(cfg.Tenancy.UserPanel.GitHubRepository)
+	if cfg.Tenancy.UserPanel.GitHubRepository == "" {
+		cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	}
+	cfg.Tenancy.UserPanel.PinnedVersion = strings.TrimSpace(cfg.Tenancy.UserPanel.PinnedVersion)
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {

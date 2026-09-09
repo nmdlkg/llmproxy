@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
@@ -174,17 +175,22 @@ func (p *Plugin) HandleUsage(ctx context.Context, record coreusage.Record) {
 
 	model := normalizedDimension(record.Model)
 	provider := normalizedDimension(record.Provider)
+	// The harness comes from the request context, never from record.Source:
+	// resolveUsageSource returns an upstream account identifier, not the client.
+	harness := constant.GetHarness(ctx)
 	requestAttributes := attribute.NewSet(
 		attribute.String("user_email", email),
 		attribute.String("model", model),
 		attribute.String("status_class", statusClass(record)),
 		attribute.Bool("failed", record.Failed),
+		attribute.String("harness", harness),
 	)
 	p.requestCount.Add(ctx, 1, otelmetric.WithAttributeSet(requestAttributes))
 
 	durationAttributes := attribute.NewSet(
 		attribute.String("user_email", email),
 		attribute.String("model", model),
+		attribute.String("harness", harness),
 	)
 	durationMilliseconds := float64(record.Latency) / float64(time.Millisecond)
 	if durationMilliseconds < 0 {
@@ -199,6 +205,7 @@ func (p *Plugin) HandleUsage(ctx context.Context, record coreusage.Record) {
 			attribute.String("model", model),
 			attribute.String("provider", provider),
 			attribute.String("token_type", category.name),
+			attribute.String("harness", harness),
 		)
 		p.tokenUsage.Add(ctx, category.tokens, otelmetric.WithAttributeSet(tokenAttributes))
 	}

@@ -12,8 +12,12 @@ const (
 )
 
 var (
-	ErrNotFound    = errors.New("tenancy: not found")
-	ErrInvalidRole = errors.New("tenancy: invalid role")
+	ErrNotFound          = errors.New("tenancy: not found")
+	ErrInvalidRole       = errors.New("tenancy: invalid role")
+	ErrInvalidAPIKeyHash = errors.New("tenancy: invalid API key hash")
+	ErrAPIKeyExists      = errors.New("tenancy: API key already exists")
+	ErrAPIKeyLimit       = errors.New("tenancy: active API key limit reached")
+	ErrAPIKeyRateLimit   = errors.New("tenancy: API key creation rate limit reached")
 )
 
 // User is one tenant that may authenticate to the proxy.
@@ -75,6 +79,49 @@ type CredentialValidation struct {
 	LastStatus    string
 }
 
+// UsageModelStat aggregates one user's ledger rows for a single model. Attempts
+// counts upstream provider attempts, not logical client requests: the auth
+// conductor may retry credentials or models, and each attempt appends a row.
+type UsageModelStat struct {
+	Provider       string
+	Model          string
+	CostNanoUSD    int64
+	InputTokens    int64
+	OutputTokens   int64
+	Attempts       int64
+	FailedAttempts int64
+}
+
+// UsageProviderStat aggregates one user's ledger rows for a provider.
+type UsageProviderStat struct {
+	Provider       string
+	CostNanoUSD    int64
+	InputTokens    int64
+	OutputTokens   int64
+	Attempts       int64
+	FailedAttempts int64
+}
+
+// UsageDailyStat aggregates one user's ledger rows for a single UTC day.
+type UsageDailyStat struct {
+	Day            time.Time
+	CostNanoUSD    int64
+	InputTokens    int64
+	OutputTokens   int64
+	Attempts       int64
+	FailedAttempts int64
+}
+
+// UsageUserStat aggregates one user's ledger rows over a window for admin views.
+type UsageUserStat struct {
+	UserID         string
+	CostNanoUSD    int64
+	InputTokens    int64
+	OutputTokens   int64
+	Attempts       int64
+	FailedAttempts int64
+}
+
 // Store is the durable persistence surface used by tenancy services.
 type Store interface {
 	Close() error
@@ -86,6 +133,8 @@ type Store interface {
 	ListUsers() ([]User, error)
 
 	IssueAPIKey(userID, label string) (plaintext string, key *APIKey, err error)
+	RegisterAPIKeyHash(userID, keyHash, label string) (*APIKey, error)
+	RegisterAPIKeyHashForActor(actorID, userID, keyHash, label string) (*APIKey, error)
 	LookupByAPIKey(hash string) (*User, error)
 	RevokeAPIKey(hash string) error
 	ListAPIKeys(userID string) ([]APIKey, error)
@@ -93,6 +142,10 @@ type Store interface {
 	AppendUsage(ctx context.Context, entries []UsageEntry) error
 	UsedUnits(ctx context.Context, userID string, since time.Time) (int64, error)
 	OldestUserUsage(ctx context.Context, userID string, since time.Time) (time.Time, bool, error)
+	UsageByModel(ctx context.Context, userID string, since, until time.Time) ([]UsageModelStat, error)
+	UsageByProvider(ctx context.Context, userID string, since, until time.Time) ([]UsageProviderStat, error)
+	UsageByDay(ctx context.Context, userID string, since, until time.Time) ([]UsageDailyStat, error)
+	UsageByUser(ctx context.Context, since, until time.Time) ([]UsageUserStat, error)
 	EarliestAuthUsage(ctx context.Context, authID, provider string, since time.Time) (time.Time, bool, error)
 
 	UpsertQuotaWindow(ctx context.Context, window QuotaWindow) error

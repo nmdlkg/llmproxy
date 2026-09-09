@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -114,6 +116,12 @@ func (s *Service) Quota() *Quota {
 		return nil
 	}
 	return s.quota
+}
+
+// SetConfig updates the live quota policy after a hot reload.
+func (s *Service) SetConfig(cfg config.TenancyConfig) error {
+	if s == nil || s.quota == nil { return nil }
+	return s.quota.SetConfig(cfg.Quota)
 }
 
 // Check delegates to Quota.Check and denies when an enabled service is
@@ -231,6 +239,27 @@ func credentialResolver(authManager *coreauth.Manager) CredentialResolver {
 		}
 
 		auths := authManager.List()
+		// Stable ordering ensures duplicate copies cannot select a larger plan
+		// allowance depending on map iteration order.
+		sort.SliceStable(auths, func(i, j int) bool {
+			if auths[i] == nil {
+				return false
+			}
+			if auths[j] == nil {
+				return true
+			}
+			return auths[i].ID < auths[j].ID
+		})
+		foreign := make(map[string]bool)
+		for _, auth := range auths {
+			if auth == nil || strings.TrimSpace(auth.Attributes["owner_user_id"]) == userID {
+				continue
+			}
+			for _, key := range coreauth.CredentialIdentityKeys(auth) {
+				foreign[key] = true
+			}
+		}
+		seen := make(map[string]bool)
 		credentials := make([]Credential, 0)
 		for _, auth := range auths {
 			if auth == nil || auth.Disabled || auth.Attributes == nil {
@@ -241,6 +270,19 @@ func credentialResolver(authManager *coreauth.Manager) CredentialResolver {
 			}
 			shared, errShared := strconv.ParseBool(strings.TrimSpace(auth.Attributes["shared"]))
 			if errShared != nil || !shared {
+				continue
+			}
+			keys := coreauth.CredentialIdentityKeys(auth)
+			duplicate := false
+			for _, key := range keys {
+				if foreign[key] || seen[key] {
+					duplicate = true
+				}
+			}
+			for _, key := range keys {
+				seen[key] = true
+			}
+			if duplicate {
 				continue
 			}
 			planTier := strings.TrimSpace(auth.Attributes["plan_type"])
@@ -304,6 +346,7 @@ func WithUser(ctx context.Context, user *User) context.Context {
 	if user == nil || strings.TrimSpace(user.ID) == "" {
 		return ctx
 	}
+	ctx = constant.WithTenant(ctx, user.ID, user.Tier)
 	return context.WithValue(ctx, userContextKey{}, user)
 }
 

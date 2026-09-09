@@ -22,24 +22,25 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider         string
+	executorType     string
+	model            string
+	alias            string
+	authID           string
+	authIndex        string
+	authType         string
+	apiKey           string
+	source           string
+	sourceProvenance usage.SourceProvenance
+	reasoning        string
+	serviceTier      string
+	generate         bool
+	requestedAt      time.Time
+	ttftMu           sync.RWMutex
+	ttft             time.Duration
+	ttftStart        time.Time
+	ttftSet          bool
+	once             sync.Once
 }
 
 type usageExecutor interface {
@@ -62,17 +63,19 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if alias == "" {
 		alias = model
 	}
+	source, sourceProvenance := resolveUsageSource(auth, apiKey)
 	reporter := &UsageReporter{
-		provider:    provider,
-		model:       model,
-		alias:       strings.TrimSpace(alias),
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
-		authType:    resolveUsageAuthType(auth),
-		reasoning:   usage.ReasoningEffortFromContext(ctx),
-		serviceTier: usage.ServiceTierFromContext(ctx),
-		generate:    usage.GenerateFromContext(ctx),
+		provider:         provider,
+		model:            model,
+		alias:            strings.TrimSpace(alias),
+		requestedAt:      time.Now(),
+		apiKey:           apiKey,
+		source:           source,
+		sourceProvenance: sourceProvenance,
+		authType:         resolveUsageAuthType(auth),
+		reasoning:        usage.ReasoningEffortFromContext(ctx),
+		serviceTier:      usage.ServiceTierFromContext(ctx),
+		generate:         usage.GenerateFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -261,6 +264,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Model:               model,
 		Alias:               r.alias,
 		Source:              r.source,
+		SourceProvenance:    r.sourceProvenance,
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
@@ -386,43 +390,48 @@ func APIKeyFromContext(ctx context.Context) string {
 	return ""
 }
 
-func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {
+func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) (string, usage.SourceProvenance) {
 	if auth != nil {
 		provider := strings.TrimSpace(auth.Provider)
 		if strings.EqualFold(provider, "vertex") {
 			if auth.Metadata != nil {
 				if projectID, ok := auth.Metadata["project_id"].(string); ok {
 					if trimmed := strings.TrimSpace(projectID); trimmed != "" {
-						return trimmed
+						return trimmed, usage.SourceProvenanceIdentifier
 					}
 				}
 				if project, ok := auth.Metadata["project"].(string); ok {
 					if trimmed := strings.TrimSpace(project); trimmed != "" {
-						return trimmed
+						return trimmed, usage.SourceProvenanceIdentifier
 					}
 				}
 			}
 		}
-		if _, value := auth.AccountInfo(); value != "" {
-			return strings.TrimSpace(value)
+		accountKind, value := auth.AccountInfo()
+		if value != "" {
+			provenance := usage.SourceProvenanceIdentifier
+			if accountKind == "api_key" {
+				provenance = usage.SourceProvenanceSecret
+			}
+			return strings.TrimSpace(value), provenance
 		}
 		if auth.Metadata != nil {
 			if email, ok := auth.Metadata["email"].(string); ok {
 				if trimmed := strings.TrimSpace(email); trimmed != "" {
-					return trimmed
+					return trimmed, usage.SourceProvenanceIdentifier
 				}
 			}
 		}
 		if auth.Attributes != nil {
 			if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
-				return key
+				return key, usage.SourceProvenanceSecret
 			}
 		}
 	}
 	if trimmed := strings.TrimSpace(ctxAPIKey); trimmed != "" {
-		return trimmed
+		return trimmed, usage.SourceProvenanceSecret
 	}
-	return ""
+	return "", usage.SourceProvenanceUnknown
 }
 
 func resolveUsageAuthType(auth *cliproxyauth.Auth) string {

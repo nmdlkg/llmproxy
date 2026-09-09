@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
@@ -244,6 +245,21 @@ func TestGetContextWithCancelPreservesQuotaAndTenantValues(t *testing.T) {
 	resolvedUser, ok := tenancy.UserFromContext(executionContext)
 	if !ok || resolvedUser.ID != user.ID {
 		t.Fatalf("execution context user = %#v, %t; want user-1", resolvedUser, ok)
+	}
+}
+
+func TestGetContextWithCancelClassifiesHarnessFromUserAgent(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	request.Header.Set("User-Agent", "claude-cli/2.1.63")
+	ginContext.Request = request
+
+	handler := NewBaseAPIHandlers(&config.SDKConfig{}, nil)
+	executionContext, cancel := handler.GetContextWithCancel(nil, ginContext, context.Background())
+	defer cancel()
+	if got := constant.GetHarness(executionContext); got != constant.HarnessClaudeCode {
+		t.Fatalf("GetHarness() = %q, want %q", got, constant.HarnessClaudeCode)
 	}
 }
 

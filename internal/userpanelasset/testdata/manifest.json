@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "version": "1.0.0",
+  "key_id": "release-2026",
+  "artifact": "user.html",
+  "size": 143,
+  "sha256": "e8b19a140c3ebcfa83d52847082930f75e8871bdbcd0501690f8e763fad09bb5",
+  "csp_hashes": [
+    "sha256-EbhZdMD2MzsZsyaosd4VqiMU0cOrQu84zTvNstj/Sfo=",
+    "sha256-3NukuEgz3eCqFp2865Fm74xAoTPS6ruvf41GmFVYVzg="
+  ],
+  "runtime_dependencies": []
+}
