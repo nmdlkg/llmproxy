@@ -45,6 +45,17 @@ type Quota struct {
 	cache map[string]quotaSnapshot
 }
 
+// SetConfig applies a hot-reloaded quota policy and invalidates cached snapshots.
+func (q *Quota) SetConfig(cfg config.TenancyQuota) error {
+	windowText := strings.TrimSpace(cfg.Window)
+	if windowText == "" { windowText = config.DefaultTenancyQuotaWindow }
+	window, err := time.ParseDuration(windowText)
+	if err != nil || window <= 0 { if err == nil { err = fmt.Errorf("duration must be positive") }; return fmt.Errorf("tenancy quota: parse window %q: %w", windowText, err) }
+	q.mu.Lock(); defer q.mu.Unlock()
+	q.cfg, q.window, q.cache = cfg, window, make(map[string]quotaSnapshot)
+	return nil
+}
+
 type quotaSnapshot struct {
 	limit     int64
 	used      int64

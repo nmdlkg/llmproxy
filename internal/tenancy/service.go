@@ -118,6 +118,12 @@ func (s *Service) Quota() *Quota {
 	return s.quota
 }
 
+// SetConfig updates the live quota policy after a hot reload.
+func (s *Service) SetConfig(cfg config.TenancyConfig) error {
+	if s == nil || s.quota == nil { return nil }
+	return s.quota.SetConfig(cfg.Quota)
+}
+
 // Check delegates to Quota.Check and denies when an enabled service is
 // unexpectedly missing its quota calculator.
 func (s *Service) Check(userID string) (bool, time.Duration) {
