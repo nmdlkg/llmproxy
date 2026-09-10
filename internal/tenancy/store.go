@@ -112,6 +112,15 @@ type UsageDailyStat struct {
 	FailedAttempts int64
 }
 
+// UsageBucketStat aggregates usage or release events in one UTC interval.
+type UsageBucketStat struct {
+	Start        time.Time
+	CostNanoUSD  int64
+	InputTokens  int64
+	OutputTokens int64
+	Attempts     int64
+}
+
 // UsageUserStat aggregates one user's ledger rows over a window for admin views.
 type UsageUserStat struct {
 	UserID         string
@@ -144,6 +153,8 @@ type Store interface {
 	OldestUserUsage(ctx context.Context, userID string, since time.Time) (time.Time, bool, error)
 	UsageByModel(ctx context.Context, userID string, since, until time.Time) ([]UsageModelStat, error)
 	UsageByProvider(ctx context.Context, userID string, since, until time.Time) ([]UsageProviderStat, error)
+	ReleaseUsageBuckets(ctx context.Context, userID string, from, to, asOf time.Time, resolution, window time.Duration) ([]UsageBucketStat, int64, error)
+	UsageBuckets(ctx context.Context, userID string, since, until time.Time, resolution, shift time.Duration) ([]UsageBucketStat, error)
 	UsageByDay(ctx context.Context, userID string, since, until time.Time) ([]UsageDailyStat, error)
 	UsageByUser(ctx context.Context, since, until time.Time) ([]UsageUserStat, error)
 	EarliestAuthUsage(ctx context.Context, authID, provider string, since time.Time) (time.Time, bool, error)

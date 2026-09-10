@@ -255,21 +255,24 @@ func (h *Handler) quotaResponse(ctx context.Context, userID string) (gin.H, erro
 	if errOldest != nil {
 		return nil, errOldest
 	}
-	resetAt := now.Add(window)
+	var resetAt *time.Time
 	if found {
-		resetAt = oldest.Add(window)
+		releaseAt := oldest.Add(window)
+		resetAt = &releaseAt
 	}
 	remaining := limit - used
 	if remaining < 0 {
 		remaining = 0
 	}
 	response := gin.H{
-		"limit":        tenancy.FormatNanoUSD(limit),
-		"used":         tenancy.FormatNanoUSD(used),
-		"remaining":    tenancy.FormatNanoUSD(remaining),
-		"window":       window.String(),
-		"window_start": since,
-		"reset_at":     resetAt,
+		"limit":           tenancy.FormatNanoUSD(limit),
+		"used":            tenancy.FormatNanoUSD(used),
+		"remaining":       tenancy.FormatNanoUSD(remaining),
+		"window":          window.String(),
+		"window_start":    since,
+		"reset_at":        resetAt,
+		"next_release_at": resetAt,
+		"mode":            "rolling",
 	}
 	if composition, errComposition := h.service.Quota().Composition(userID); errComposition == nil {
 		response["composition"] = gin.H{

@@ -51,6 +51,9 @@ type Handler struct {
 	persister       authfiles.RecordPersister
 	panel           UserPanelAsset
 	credentialMu    sync.Mutex
+	planningMu      sync.Mutex
+	planningCache   map[string]planningCacheEntry
+	planningFetches singleflight.Group
 	quotaMu         sync.Mutex
 	quotaCache      map[string]providerQuotaCacheEntry
 	quotaFetches    singleflight.Group
@@ -138,6 +141,8 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine, authMiddleware gin.HandlerF
 		group.GET("/auth-status", h.GetAuthStatus)
 
 		group.GET("/usage", h.GetUsage)
+		group.GET("/usage/timeline", h.GetUsageTimeline)
+		group.GET("/usage/releases", h.GetUsageReleases)
 		group.GET("/provider-quotas", h.GetProviderQuotas)
 		group.GET("/api-keys", h.ListAPIKeys)
 		group.POST("/api-keys", h.RegisterAPIKeyHash)
