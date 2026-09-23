@@ -12,6 +12,39 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
+func TestCodexModelsForPlanGatesAstraByPlan(t *testing.T) {
+	tests := []struct {
+		name      string
+		plan      string
+		authKind  string
+		wantAstra bool
+	}{
+		{name: "plus", plan: "plus", authKind: "oauth", wantAstra: false},
+		{name: "education", plan: "edu", authKind: "oauth", wantAstra: false},
+		{name: "prolite", plan: "prolite", authKind: "oauth", wantAstra: true},
+		{name: "unknown oauth", plan: "future-plan", authKind: "oauth", wantAstra: false},
+		{name: "api key", authKind: "apikey", wantAstra: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			models := codexModelsForPlan(tt.plan, tt.authKind)
+			for _, model := range models {
+				if model == nil || !strings.EqualFold(strings.TrimSpace(model.ID), codexAstraModelID) {
+					continue
+				}
+				if !tt.wantAstra {
+					t.Fatalf("plan %q unexpectedly includes %q", tt.plan, codexAstraModelID)
+				}
+				return
+			}
+			if tt.wantAstra {
+				t.Fatalf("plan %q does not include %q", tt.plan, codexAstraModelID)
+			}
+		})
+	}
+}
+
 func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T) {
 	service := &Service{
 		cfg: &config.Config{

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -51,8 +52,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if authType == "" {
 		authType = "unknown"
 	}
-	apiKey := strings.TrimSpace(record.APIKey)
 	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	userID, userTier := resolveTenant(ctx)
 	reasoningEffort := strings.TrimSpace(record.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
@@ -108,7 +109,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Timestamp:        timestamp,
 		LatencyMs:        record.Latency.Milliseconds(),
 		TTFTMs:           record.TTFT.Milliseconds(),
-		Source:           record.Source,
+		Source:           sanitizeSource(record.Source, record.SourceProvenance),
 		AuthIndex:        record.AuthIndex,
 		AccessTokenHash:  record.AccessTokenSHA256,
 		ClientIP:         clientRequestMetadata.ClientIP,
@@ -133,13 +134,14 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Alias:               aliasName,
 		Endpoint:            resolveEndpoint(ctx),
 		AuthType:            authType,
-		APIKey:              apiKey,
 		RequestID:           requestID,
 		SessionID:           sessionID,
 		ParentSessionID:     parentSessionID,
 		NodeKind:            strings.TrimSpace(clientRequestMetadata.NodeKind),
 		IsFork:              clientRequestMetadata.IsFork,
 		IsCompaction:        clientRequestMetadata.IsCompaction,
+		UserID:              userID,
+		UserTier:            userTier,
 		ReasoningEffort:     reasoningEffort,
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
@@ -149,6 +151,28 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		return
 	}
 	Enqueue(payload)
+}
+
+// resolveTenant reads the tenant already attributed to this request. It uses the
+// request context instead of hashing the API key so the queue never handles key
+// material and so a lookup cannot mutate api-key last-used bookkeeping.
+func resolveTenant(ctx context.Context) (userID string, tier string) {
+	if ctx == nil {
+		return "", ""
+	}
+	if tenant, ok := constant.TenantFromContext(ctx); ok {
+		return tenant.ID, tenant.Tier
+	}
+	return "", ""
+}
+
+// sanitizeSource publishes only producer-confirmed non-secret attribution.
+func sanitizeSource(source string, provenance coreusage.SourceProvenance) string {
+	source = strings.TrimSpace(source)
+	if source == "" || provenance != coreusage.SourceProvenanceIdentifier {
+		return ""
+	}
+	return source
 }
 
 type queuedUsageDetail struct {
@@ -161,7 +185,6 @@ type queuedUsageDetail struct {
 	Alias               string                   `json:"alias"`
 	Endpoint            string                   `json:"endpoint"`
 	AuthType            string                   `json:"auth_type"`
-	APIKey              string                   `json:"api_key"`
 	RequestID           string                   `json:"request_id"`
 	SessionID           string                   `json:"session_id,omitempty"`
 	ParentSessionID     string                   `json:"parent_session_id,omitempty"`
@@ -172,6 +195,8 @@ type queuedUsageDetail struct {
 	ServiceTier         string                   `json:"service_tier"`
 	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
 	ResponseModel       string                   `json:"response_model,omitempty"`
+	UserID              string                   `json:"user_id,omitempty"`
+	UserTier            string                   `json:"user_tier,omitempty"`
 }
 
 type requestDetail struct {

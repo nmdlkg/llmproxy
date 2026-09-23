@@ -30,6 +30,9 @@ auths/*
 
 # Documentation
 docs/*
+!docs/admin-level-runbook.md
+!docs/build-and-deploy.md
+USER_GUIDE.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

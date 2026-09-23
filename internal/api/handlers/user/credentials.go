@@ -75,7 +75,7 @@ func (h *Handler) UploadCredential(c *gin.Context) {
 	h.credentialMu.Lock()
 	defer h.credentialMu.Unlock()
 	if !h.credentialNameAvailableToUser(name, user.ID) {
-		c.JSON(http.StatusConflict, gin.H{"error": "credential name is unavailable"})
+		c.JSON(http.StatusConflict, gin.H{"error": authfiles.ErrCredentialExists.Error()})
 		return
 	}
 	raw, errMarshal := json.Marshal(metadata)
@@ -84,6 +84,10 @@ func (h *Handler) UploadCredential(c *gin.Context) {
 		return
 	}
 	if errWrite := authfiles.WriteAuthFile(c.Request.Context(), h.cfg, h.authManager, name, raw); errWrite != nil {
+		if errors.Is(errWrite, authfiles.ErrCredentialExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": authfiles.ErrCredentialExists.Error()})
+			return
+		}
 		log.WithError(errWrite).Error("user credentials: upload failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store credential"})
 		return

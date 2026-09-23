@@ -940,6 +940,8 @@ func (h *Handler) mergeExistingAuthFileMetadata(record *coreauth.Auth) {
 }
 
 func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (string, error) {
+	authfiles.RegistrationMu.Lock()
+	defer authfiles.RegistrationMu.Unlock()
 	if record == nil {
 		return "", fmt.Errorf("token record is nil")
 	}
@@ -965,6 +967,9 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	}
 	if errOwner := authfiles.StampOwnerFromContext(ctx, record); errOwner != nil {
 		return "", fmt.Errorf("owner post-auth hook failed: %w", errOwner)
+	}
+	if errCheck := authfiles.CheckUserRegistration(ctx, h.cfg, h.authManager, record); errCheck != nil {
+		return "", errCheck
 	}
 	savedPath, errSave := store.Save(coreauth.WithAuthCreationIntent(ctx), record)
 	if errSave != nil {

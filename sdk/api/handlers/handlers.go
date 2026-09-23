@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
@@ -536,6 +537,11 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			SessionID:        sessionID,
 			ParentSessionID:  parentSessionID,
 		})
+		// Classify the originating harness here rather than at route entry: most
+		// handlers build their executor context from context.Background(), so a
+		// value stored only on the gin request context would not reach the usage
+		// plugins.
+		newCtx = constant.WithHarness(newCtx, constant.ClassifyHarness(c.Request.UserAgent()))
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
 	newCtx = logging.WithResponseHeadersHolder(newCtx)

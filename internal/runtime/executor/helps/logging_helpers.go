@@ -66,6 +66,7 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	if cfg == nil || cfg.CommercialMode {
 		return
 	}
+	info.Body = util.RedactSensitiveLogBody(info.Body)
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
 		return
@@ -82,8 +83,9 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	requestText := ""
 	if source, ok := apiRequestSource(ginCtx); ok {
 		if errWrite := source.AppendBytes([]byte(builder.String())); errWrite == nil {
-			if len(info.Body) > 0 {
-				if errBody := source.AppendBytes(info.Body); errBody != nil {
+			redactedBody := util.RedactSensitiveLogBody(info.Body)
+			if len(redactedBody) > 0 {
+				if errBody := source.AppendBytes(redactedBody); errBody != nil {
 					log.WithError(errBody).Warn("failed to append api request body log part")
 				}
 			} else if errEmpty := source.AppendBytes([]byte("<empty>")); errEmpty != nil {
@@ -94,8 +96,9 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 			}
 		} else {
 			log.WithError(errWrite).Warn("failed to append api request log part")
-			if len(info.Body) > 0 {
-				builder.WriteString(string(info.Body))
+			redactedBody := util.RedactSensitiveLogBody(info.Body)
+			if len(redactedBody) > 0 {
+				builder.WriteString(string(redactedBody))
 			} else {
 				builder.WriteString("<empty>")
 			}
@@ -103,8 +106,9 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 			requestText = builder.String()
 		}
 	} else {
-		if len(info.Body) > 0 {
-			builder.WriteString(string(info.Body))
+		redactedBody := util.RedactSensitiveLogBody(info.Body)
+		if len(redactedBody) > 0 {
+			builder.WriteString(string(redactedBody))
 		} else {
 			builder.WriteString("<empty>")
 		}
@@ -246,7 +250,7 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
-	data := bytes.TrimSpace(chunk)
+	data := bytes.TrimSpace(util.RedactSensitiveLogBody(chunk))
 	if len(data) == 0 {
 		return
 	}
@@ -496,6 +500,7 @@ func writeAttemptResponse(ginCtx *gin.Context, attempt *upstreamAttempt, payload
 	if attempt == nil || len(payload) == 0 {
 		return
 	}
+	payload = util.RedactSensitiveLogBody(payload)
 	trailingNewlines := 0
 	for i := len(payload) - 1; i >= 0 && payload[i] == '\n'; i-- {
 		trailingNewlines++
@@ -579,7 +584,7 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 	if ginCtx == nil {
 		return
 	}
-	data := bytes.TrimSpace(chunk)
+	data := bytes.TrimSpace(util.RedactSensitiveLogBody(chunk))
 	if len(data) == 0 {
 		return
 	}

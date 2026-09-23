@@ -137,17 +137,14 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if a.Attributes != nil {
 			codexPlanType = strings.TrimSpace(a.Attributes["plan_type"])
 		}
-		switch strings.ToLower(codexPlanType) {
-		case "pro":
-			models = registry.GetCodexProModels()
-		case "plus":
-			models = registry.GetCodexPlusModels()
-		case "team", "business", "go":
-			models = registry.GetCodexTeamModels()
-		case "free":
-			models = registry.GetCodexFreeModels()
-		default:
-			models = registry.GetCodexProModels()
+		models = codexModelsForPlan(codexPlanType, authKind)
+		if entry := s.resolveConfigCodexKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildCodexConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
@@ -303,6 +300,28 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+}
+
+// codexModelsForPlan selects the catalog for the account's Codex plan.
+func codexModelsForPlan(planType, authKind string) []*registry.ModelInfo {
+	plan := strings.ToLower(strings.TrimSpace(planType))
+	switch plan {
+	case "free":
+		return registry.GetCodexFreeModels()
+	case "plus", "edu", "edu_plus", "edu_pro", "education", "k12":
+		return registry.GetCodexPlusModels()
+	case "prolite", "pro":
+		return registry.GetCodexProModels()
+	case "team", "business", "go", "enterprise", "finserv", "hc", "quorum", "sci":
+		return registry.GetCodexTeamModels()
+	default:
+		// API-key credentials do not carry a subscription plan. Preserve the
+		// previous behavior for those credentials.
+		if strings.EqualFold(strings.TrimSpace(authKind), "apikey") {
+			return registry.GetCodexProModels()
+		}
+		return registry.GetCodexProModels()
+	}
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

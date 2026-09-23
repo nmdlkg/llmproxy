@@ -13,6 +13,15 @@ import (
 // DefaultServiceTier is retained for direct SDK and non-OpenAI usage callers.
 const DefaultServiceTier = "default"
 
+// SourceProvenance identifies whether a usage source is safe attribution data.
+type SourceProvenance string
+
+const (
+	SourceProvenanceUnknown    SourceProvenance = ""
+	SourceProvenanceSecret     SourceProvenance = "secret"
+	SourceProvenanceIdentifier SourceProvenance = "identifier"
+)
+
 // AutoServiceTier is the OpenAI request semantics when service_tier is omitted.
 // OpenAI HTTP handlers set it explicitly, without changing other providers'
 // historical direct-SDK default.
@@ -36,6 +45,8 @@ type Record struct {
 	AccessTokenSHA256 string
 	AuthType          string
 	Source            string
+	// SourceProvenance is internal provenance metadata and is never serialized.
+	SourceProvenance SourceProvenance `json:"-"`
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.

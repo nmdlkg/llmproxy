@@ -80,6 +80,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
 	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -129,6 +130,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
+	cfg.Tenancy.UserPanel.GitHubRepository = strings.TrimSpace(cfg.Tenancy.UserPanel.GitHubRepository)
+	if cfg.Tenancy.UserPanel.GitHubRepository == "" {
+		cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	}
+	cfg.Tenancy.UserPanel.PinnedVersion = strings.TrimSpace(cfg.Tenancy.UserPanel.PinnedVersion)
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {

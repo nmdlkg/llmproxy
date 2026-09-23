@@ -211,6 +211,8 @@ func UpsertAuthRecord(ctx context.Context, manager *coreauth.Manager, auth *core
 // WriteAuthFile writes a validated JSON auth file with owner-only permissions and
 // updates the runtime auth manager.
 func WriteAuthFile(ctx context.Context, cfg *config.Config, manager *coreauth.Manager, name string, data []byte) error {
+	RegistrationMu.Lock()
+	defer RegistrationMu.Unlock()
 	if cfg == nil {
 		return fmt.Errorf("config is unavailable")
 	}
@@ -238,6 +240,9 @@ func WriteAuthFile(ctx context.Context, cfg *config.Config, manager *coreauth.Ma
 	auth, errBuild := BuildAuthFromFileData(cfg, manager, dst, data)
 	if errBuild != nil {
 		return errBuild
+	}
+	if errCheck := CheckUserRegistration(ctx, cfg, manager, auth); errCheck != nil {
+		return errCheck
 	}
 	if errMkdir := os.MkdirAll(filepath.Dir(dst), 0o700); errMkdir != nil {
 		return fmt.Errorf("failed to create auth directory: %w", errMkdir)
