@@ -332,7 +332,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	// Capture headers
 	var headers map[string][]string
 	if c.Request.Header != nil {
-		headers = c.Request.Header.Clone()
+		headers = redactRequestLogHeaders(c.Request.Header.Clone())
 	} else {
 		headers = make(map[string][]string)
 	}
