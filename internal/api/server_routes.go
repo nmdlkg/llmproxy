@@ -83,9 +83,6 @@ func (s *Server) setupRoutes() {
 		v1.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
 		v1.POST("/live", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
 		v1.GET("/live/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
-		v1.POST("/realtime/calls", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
-		v1.GET("/realtime/calls/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
-		v1.GET("/realtime", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
 	}
 
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
