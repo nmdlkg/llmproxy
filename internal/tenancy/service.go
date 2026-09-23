@@ -120,7 +120,9 @@ func (s *Service) Quota() *Quota {
 
 // SetConfig updates the live quota policy after a hot reload.
 func (s *Service) SetConfig(cfg config.TenancyConfig) error {
-	if s == nil || s.quota == nil { return nil }
+	if s == nil || s.quota == nil {
+		return nil
+	}
 	return s.quota.SetConfig(cfg.Quota)
 }
 

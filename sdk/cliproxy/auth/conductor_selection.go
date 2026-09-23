@@ -1008,6 +1008,65 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	return authCopy, executor, nil
 }
 
+// LastUpstreamError returns the most recent upstream failure recorded for the
+// supplied providers and route model. Selection errors such as auth_unavailable
+// only report that no credential was picked, so callers use this to surface the
+// provider-side cause (for example "server_is_overloaded") that led there.
+// Credential identity is deliberately omitted from the returned error.
+func (m *Manager) LastUpstreamError(providers []string, routeModel string) *Error {
+	if m == nil {
+		return nil
+	}
+	providerSet := make(map[string]struct{}, len(providers))
+	for i := range providers {
+		if key := strings.TrimSpace(strings.ToLower(providers[i])); key != "" {
+			providerSet[key] = struct{}{}
+		}
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var newest *Error
+	var newestAt time.Time
+	consider := func(candidate *Error, updatedAt time.Time) {
+		if candidate == nil || strings.TrimSpace(candidate.Message) == "" {
+			return
+		}
+		if newest != nil && !updatedAt.After(newestAt) {
+			return
+		}
+		newest = candidate
+		newestAt = updatedAt
+	}
+
+	for _, auth := range m.auths {
+		if auth == nil {
+			continue
+		}
+		if len(providerSet) > 0 {
+			if _, ok := providerSet[executorKeyFromAuth(auth)]; !ok {
+				continue
+			}
+		}
+		stateKey := canonicalModelKey(m.selectionModelForAuth(auth, routeModel))
+		if stateKey != "" && len(auth.ModelStates) > 0 {
+			for model, state := range auth.ModelStates {
+				if state == nil || canonicalModelKey(model) != stateKey {
+					continue
+				}
+				consider(state.LastError, state.UpdatedAt)
+			}
+			continue
+		}
+		consider(auth.LastError, auth.UpdatedAt)
+	}
+	if newest == nil {
+		return nil
+	}
+	return cloneError(newest)
+}
+
 // SelectAuth selects one credential through the configured scheduling strategy.
 // It does not execute or alter the selected credential's result state.
 func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts cliproxyexecutor.Options) (*Auth, error) {

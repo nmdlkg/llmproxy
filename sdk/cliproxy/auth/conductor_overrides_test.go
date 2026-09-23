@@ -471,6 +471,9 @@ func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {
 	if state.NextRetryAfter.IsZero() {
 		t.Fatalf("expected bad auth model state cooldown to be set")
 	}
+	if remaining := time.Until(state.NextRetryAfter); remaining < 23*time.Hour || remaining > 24*time.Hour {
+		t.Fatalf("model support cooldown = %v, want about 24h", remaining)
+	}
 }
 
 func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
