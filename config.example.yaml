@@ -349,7 +349,10 @@ save-cooldown-status: false
 
 # Cooldown duration in seconds for transient upstream errors (408/500/502/503/504).
 # Set to 0 to keep the legacy 60-second cooldown; set to -1 to disable transient error cooldowns.
-transient-error-cooldown-seconds: 0
+# Upstream capacity failures ("server_is_overloaded", "model is at capacity") land here too.
+# The legacy 60-second window exceeds max-retry-interval, so every credential stays parked and
+# the request fails instead of rotating. A shorter window keeps rotation and retries working.
+transient-error-cooldown-seconds: 15
 
 # When true, globally disable Claude request cloaking (the Claude Code CLI disguise and
 # system prompt replacement), so the original system prompt is passed through to Claude as-is.
