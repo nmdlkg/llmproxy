@@ -25,7 +25,7 @@ func statusFromError(err error) int {
 	return 0
 }
 
-func enrichAuthSelectionError(err error, providers []string, model string) error {
+func (h *BaseAPIHandler) enrichAuthSelectionError(err error, providers []string, model string) error {
 	if err == nil {
 		return nil
 	}
@@ -54,6 +54,21 @@ func enrichAuthSelectionError(err error, providers []string, model string) error
 		baseMessage = "no auth available"
 	}
 	detail := fmt.Sprintf("%s (providers=%s, model=%s)", baseMessage, providerText, modelText)
+
+	// Selection errors only report that no credential was picked. Surface the
+	// upstream failure that caused every candidate to be skipped, so provider
+	// messages such as "server_is_overloaded" are not lost.
+	if h != nil && h.AuthManager != nil {
+		if upstream := h.AuthManager.LastUpstreamError(providers, model); upstream != nil {
+			if cause := strings.TrimSpace(upstream.Message); cause != "" && !strings.Contains(detail, cause) {
+				if upstreamCode := strings.TrimSpace(upstream.Code); upstreamCode != "" && upstreamCode != code {
+					detail += fmt.Sprintf("; last upstream error: %s: %s", upstreamCode, cause)
+				} else {
+					detail += "; last upstream error: " + cause
+				}
+			}
+		}
+	}
 
 	// Clarify the most common alias confusion between Anthropic route names and internal provider keys.
 	if strings.Contains(","+providerText+",", ",claude,") {

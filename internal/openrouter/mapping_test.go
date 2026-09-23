@@ -9,6 +9,9 @@ func TestResolveModels(t *testing.T) {
 		"vendor/other-model",
 		"alpha/ambiguous-20250101",
 		"beta/ambiguous-20250202",
+		"anthropic/claude-opus-5",
+		"anthropic/claude-opus-5.5",
+		"anthropic/claude-fable-5.1",
 	}
 
 	tests := []struct {
@@ -67,6 +70,35 @@ func TestResolveModels(t *testing.T) {
 			local:    "gpt-4o-mini",
 			method:   MappingUnresolved,
 			resolved: false,
+		},
+		{
+			name:     "version punctuation folded",
+			local:    "claude-opus-5-5",
+			wantID:   "anthropic/claude-opus-5.5",
+			method:   MappingHeuristic,
+			resolved: true,
+		},
+		{
+			name:     "repeated version punctuation folded",
+			local:    "claude-fable-5-1",
+			wantID:   "anthropic/claude-fable-5.1",
+			method:   MappingHeuristic,
+			resolved: true,
+		},
+		{
+			name:     "exact match preferred over punctuation folding",
+			local:    "claude-opus-5",
+			wantID:   "anthropic/claude-opus-5",
+			method:   MappingHeuristic,
+			resolved: true,
+		},
+		{
+			name:     "explicit mapping still wins over punctuation folding",
+			local:    "claude-opus-5-5",
+			explicit: map[string]string{"claude-opus-5-5": "vendor/other-model"},
+			wantID:   "vendor/other-model",
+			method:   MappingExplicit,
+			resolved: true,
 		},
 	}
 

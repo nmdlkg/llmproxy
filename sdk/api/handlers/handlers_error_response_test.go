@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -128,7 +129,7 @@ func TestWriteErrorResponse_AddonHeadersEnabled(t *testing.T) {
 
 func TestEnrichAuthSelectionError_DefaultsTo503WithContext(t *testing.T) {
 	in := &coreauth.Error{Code: "auth_not_found", Message: "no auth available"}
-	out := enrichAuthSelectionError(in, []string{"claude"}, "claude-sonnet-4-6")
+	out := (&BaseAPIHandler{}).enrichAuthSelectionError(in, []string{"claude"}, "claude-sonnet-4-6")
 
 	var got *coreauth.Error
 	if !errors.As(out, &got) || got == nil {
@@ -150,7 +151,7 @@ func TestEnrichAuthSelectionError_DefaultsTo503WithContext(t *testing.T) {
 
 func TestEnrichAuthSelectionError_PreservesExplicitStatus(t *testing.T) {
 	in := &coreauth.Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusTooManyRequests}
-	out := enrichAuthSelectionError(in, []string{"gemini"}, "gemini-2.5-pro")
+	out := (&BaseAPIHandler{}).enrichAuthSelectionError(in, []string{"gemini"}, "gemini-2.5-pro")
 
 	var got *coreauth.Error
 	if !errors.As(out, &got) || got == nil {
@@ -163,8 +164,73 @@ func TestEnrichAuthSelectionError_PreservesExplicitStatus(t *testing.T) {
 
 func TestEnrichAuthSelectionError_IgnoresOtherErrors(t *testing.T) {
 	in := errors.New("boom")
-	out := enrichAuthSelectionError(in, []string{"claude"}, "claude-sonnet-4-6")
+	out := (&BaseAPIHandler{}).enrichAuthSelectionError(in, []string{"claude"}, "claude-sonnet-4-6")
 	if out != in {
 		t.Fatalf("expected original error to be returned unchanged")
+	}
+}
+
+func TestEnrichAuthSelectionError_AppendsLastUpstreamError(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusError,
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-6-astra": {
+				Unavailable: true,
+				UpdatedAt:   time.Now(),
+				LastError:   &coreauth.Error{Code: "server_is_overloaded", Message: "server_is_overloaded"},
+			},
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	handler := &BaseAPIHandler{AuthManager: manager}
+	in := &coreauth.Error{Code: "auth_unavailable", Message: "no auth available"}
+	out := handler.enrichAuthSelectionError(in, []string{"codex"}, "gpt-6-astra")
+
+	var got *coreauth.Error
+	if !errors.As(out, &got) || got == nil {
+		t.Fatalf("expected coreauth.Error, got %T", out)
+	}
+	if !strings.Contains(got.Message, "last upstream error") {
+		t.Fatalf("message missing upstream cause: %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "server_is_overloaded") {
+		t.Fatalf("message missing provider error: %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "providers=codex") {
+		t.Fatalf("message missing provider context: %q", got.Message)
+	}
+}
+
+func TestEnrichAuthSelectionError_SkipsUpstreamErrorFromOtherProvider(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, errRegister := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "gemini-auth",
+		Provider: "gemini",
+		ModelStates: map[string]*coreauth.ModelState{
+			"gemini-2.5-pro": {
+				Unavailable: true,
+				UpdatedAt:   time.Now(),
+				LastError:   &coreauth.Error{Code: "quota", Message: "gemini quota exhausted"},
+			},
+		},
+	}); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	handler := &BaseAPIHandler{AuthManager: manager}
+	in := &coreauth.Error{Code: "auth_unavailable", Message: "no auth available"}
+	out := handler.enrichAuthSelectionError(in, []string{"codex"}, "gpt-6-astra")
+
+	var got *coreauth.Error
+	if !errors.As(out, &got) || got == nil {
+		t.Fatalf("expected coreauth.Error, got %T", out)
+	}
+	if strings.Contains(got.Message, "gemini quota exhausted") {
+		t.Fatalf("message leaked another provider's error: %q", got.Message)
 	}
 }

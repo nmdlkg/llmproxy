@@ -120,7 +120,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
 	if s.tenancyService != nil {
-		if err := s.tenancyService.SetConfig(cfg.Tenancy); err != nil { log.Errorf("failed to reconfigure tenancy quota: %v", err) }
+		if err := s.tenancyService.SetConfig(cfg.Tenancy); err != nil {
+			log.Errorf("failed to reconfigure tenancy quota: %v", err)
+		}
 	}
 
 	// Update log level dynamically when debug flag changes

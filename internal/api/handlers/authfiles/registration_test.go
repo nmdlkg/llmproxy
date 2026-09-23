@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -61,5 +63,62 @@ func TestConcurrentRegistrationBeforeWatcherLoad(t *testing.T) {
 	}
 	if successes != 1 || duplicates != 1 {
 		t.Fatalf("successes=%d duplicates=%d", successes, duplicates)
+	}
+}
+
+func TestRegistrationIgnoresFileAuthWithoutBackingFile(t *testing.T) {
+	for _, withPathAttribute := range []bool{true, false} {
+		t.Run(fmt.Sprintf("path_attribute=%t", withPathAttribute), func(t *testing.T) {
+			cfg := &config.Config{AuthDir: t.TempDir()}
+			manager := coreauth.NewManager(nil, nil, nil)
+			ghost := &coreauth.Auth{
+				ID:         "codex-ghost.json",
+				Provider:   "codex",
+				FileName:   "codex-ghost.json",
+				Attributes: map[string]string{},
+				Metadata:   map[string]any{"account_id": "same-account"},
+			}
+			if withPathAttribute {
+				ghost.Attributes[coreauth.AttributePath] = filepath.Join(cfg.AuthDir, ghost.FileName)
+			}
+			if _, errRegister := manager.Register(context.Background(), ghost); errRegister != nil {
+				t.Fatal(errRegister)
+			}
+
+			record := &coreauth.Auth{ID: "codex-new.json", Provider: "codex", Metadata: map[string]any{"account_id": "same-account"}}
+			ctx := tenancy.WithUser(context.Background(), &tenancy.User{ID: "user"})
+			RegistrationMu.Lock()
+			defer RegistrationMu.Unlock()
+			if errCheck := CheckUserRegistration(ctx, cfg, manager, record); errCheck != nil {
+				t.Fatalf("stale record blocked registration: %v", errCheck)
+			}
+		})
+	}
+}
+
+func TestRegistrationStillRejectsFileAuthPresentOnDisk(t *testing.T) {
+	cfg := &config.Config{AuthDir: t.TempDir()}
+	manager := coreauth.NewManager(nil, nil, nil)
+	path := filepath.Join(cfg.AuthDir, "codex-live.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","account_id":"same-account"}`), 0o600); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	live := &coreauth.Auth{
+		ID:         "codex-live.json",
+		Provider:   "codex",
+		FileName:   "codex-live.json",
+		Attributes: map[string]string{coreauth.AttributePath: path},
+		Metadata:   map[string]any{"account_id": "same-account"},
+	}
+	if _, errRegister := manager.Register(context.Background(), live); errRegister != nil {
+		t.Fatal(errRegister)
+	}
+
+	record := &coreauth.Auth{ID: "codex-new.json", Provider: "codex", Metadata: map[string]any{"account_id": "same-account"}}
+	ctx := tenancy.WithUser(context.Background(), &tenancy.User{ID: "user"})
+	RegistrationMu.Lock()
+	defer RegistrationMu.Unlock()
+	if errCheck := CheckUserRegistration(ctx, cfg, manager, record); !errors.Is(errCheck, ErrCredentialExists) {
+		t.Fatalf("duplicate err=%v", errCheck)
 	}
 }
