@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"reflect"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -47,6 +49,9 @@ type ErrorDetail struct {
 
 	// Code is a short code identifying the error, if applicable.
 	Code string `json:"code,omitempty"`
+
+	// Retryable optionally indicates whether a retry might fix the issue automatically.
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
 const idempotencyKeyMetadataKey = "idempotency_key"
@@ -62,6 +67,13 @@ const (
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
 // If errText is already valid JSON, it is returned as-is to preserve upstream error payloads.
 func BuildErrorResponseBody(status int, errText string) []byte {
+	return BuildErrorResponseBodyWithError(status, errText, nil)
+}
+
+// BuildErrorResponseBodyWithError builds an OpenAI-compatible JSON error response body,
+// preserving structured classifications (such as terminal upstream auth failures and retryable flags)
+// present in err.
+func BuildErrorResponseBodyWithError(status int, errText string, err error) []byte {
 	if status <= 0 {
 		status = http.StatusInternalServerError
 	}
@@ -70,6 +82,36 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	}
 
 	trimmed := strings.TrimSpace(errText)
+
+	if coreauth.IsTerminalAuthError(err) {
+		message := errText
+		if trimmed != "" && json.Valid([]byte(trimmed)) {
+			var parsed map[string]any
+			if errUnmarshal := json.Unmarshal([]byte(trimmed), &parsed); errUnmarshal == nil {
+				if msg, ok := parsed["message"].(string); ok && msg != "" {
+					message = msg
+				} else if errMap, ok := parsed["error"].(map[string]any); ok {
+					if msg, ok := errMap["message"].(string); ok && msg != "" {
+						message = msg
+					}
+				}
+			}
+		}
+		r := false
+		payload, errMarshal := json.Marshal(ErrorResponse{
+			Error: ErrorDetail{
+				Message:   message,
+				Type:      "authentication_error",
+				Code:      "upstream_authentication_required",
+				Retryable: &r,
+			},
+		})
+		if errMarshal != nil {
+			return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"authentication_error","code":"upstream_authentication_required","retryable":false}}`, message))
+		}
+		return payload
+	}
+
 	if trimmed != "" && json.Valid([]byte(trimmed)) {
 		return []byte(trimmed)
 	}
@@ -96,20 +138,20 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 		}
 	}
 
-	payload, err := json.Marshal(ErrorResponse{
+	payload, errMarshal := json.Marshal(ErrorResponse{
 		Error: ErrorDetail{
 			Message: errText,
 			Type:    errType,
 			Code:    code,
 		},
 	})
-	if err != nil {
+	if errMarshal != nil {
 		return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"server_error","code":"internal_server_error"}}`, errText))
 	}
 	return payload
 }
 
-// StreamingKeepAliveInterval returns the SSE keep-alive interval for this server.
+// StreamingKeepAliveInterval returns the streaming keep-alive interval for this server (SSE heartbeats and WebSocket Ping frames).
 // Returning 0 disables keep-alives (default when unset).
 func StreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 	seconds := defaultStreamingKeepAliveSeconds
@@ -151,6 +193,12 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 // Default is false.
 func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
 	return cfg != nil && cfg.PassthroughHeaders
+}
+
+// executionPassthroughHeaders keeps client responses behind passthrough-headers while
+// plugin-host internal executions always receive filtered upstream headers.
+func executionPassthroughHeaders(cfg *config.SDKConfig, internal bool) bool {
+	return internal || PassthroughHeadersEnabled(cfg)
 }
 
 func requestExecutionMetadata(ctx context.Context) map[string]any {
@@ -201,6 +249,53 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
 	return meta
+}
+
+func requestClientIP(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	remoteAddr := strings.TrimSpace(request.RemoteAddr)
+	if host, _, errSplit := net.SplitHostPort(remoteAddr); errSplit == nil {
+		return strings.TrimSpace(host)
+	}
+	return remoteAddr
+}
+
+func extractSessionIDsFromRequest(request *http.Request) (string, string) {
+	if request == nil || request.Header == nil {
+		return "", ""
+	}
+	if info, ok := coresession.ExtractSessionInfo(request.Header, nil, nil); ok {
+		return info.SessionID, info.ParentSessionID
+	}
+	return "", ""
+}
+
+// EnrichContextWithSessionHierarchy extracts canonical session and parent session identities
+// from headers, payload, and metadata and records them in ClientRequestMetadata.
+func EnrichContextWithSessionHierarchy(ctx context.Context, headers http.Header, payload []byte, metadata map[string]any) context.Context {
+	meta := logging.GetClientRequestMetadata(ctx)
+	if info, ok := coresession.ExtractSessionInfo(headers, payload, metadata); ok {
+		meta.SessionID = info.SessionID
+		meta.ParentSessionID = info.ParentSessionID
+		if meta.SessionID != "" && meta.SessionID == meta.ParentSessionID {
+			meta.ParentSessionID = ""
+		}
+		ctx = logging.WithClientRequestMetadata(ctx, meta)
+		return util.WithSessionID(ctx, meta.SessionID)
+	}
+	if meta.SessionID != "" || meta.ParentSessionID != "" || util.SessionIDFromContext(ctx) != "" {
+		meta.SessionID = ""
+		meta.ParentSessionID = ""
+		ctx = logging.WithClientRequestMetadata(ctx, meta)
+		return util.WithSessionID(ctx, "")
+	}
+	return ctx
+}
+
+func enrichContextWithSessionHierarchy(ctx context.Context, headers http.Header, payload []byte, metadata map[string]any) context.Context {
+	return EnrichContextWithSessionHierarchy(ctx, headers, payload, metadata)
 }
 
 func requestCallerScope(ginCtx *gin.Context) string {
@@ -430,6 +525,17 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	if endpoint != "" {
 		newCtx = logging.WithEndpoint(newCtx, endpoint)
+	}
+	if c != nil && c.Request != nil {
+		sessionID, parentSessionID := extractSessionIDsFromRequest(c.Request)
+		newCtx = logging.WithClientRequestMetadata(newCtx, logging.ClientRequestMetadata{
+			ClientIP:         requestClientIP(c.Request),
+			ResolvedClientIP: strings.TrimSpace(c.ClientIP()),
+			XForwardedFor:    strings.TrimSpace(strings.Join(c.Request.Header.Values("X-Forwarded-For"), ", ")),
+			UserAgent:        strings.TrimSpace(c.Request.UserAgent()),
+			SessionID:        sessionID,
+			ParentSessionID:  parentSessionID,
+		})
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
 	newCtx = logging.WithResponseHeadersHolder(newCtx)

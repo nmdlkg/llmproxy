@@ -25,44 +25,59 @@ type configCommit struct {
 }
 
 type routingRuntimeState struct {
-	strategy           string
-	sessionAffinity    bool
-	sessionAffinityTTL time.Duration
+	strategy                 string
+	sessionAffinity          bool
+	sessionAffinityTTL       time.Duration
+	sessionAffinitySubagents bool
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	state := routingRuntimeState{
-		strategy:           "round-robin",
-		sessionAffinityTTL: time.Hour,
+		strategy:                 "round-robin",
+		sessionAffinityTTL:       time.Hour,
+		sessionAffinitySubagents: true,
 	}
 	if cfg == nil {
 		return state
 	}
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
+	case "weighted-round-robin", "weightedroundrobin", "wrr":
+		state.strategy = "weighted-round-robin"
 	case "fill-first", "fillfirst", "ff":
 		state.strategy = "fill-first"
 	}
 	state.sessionAffinity = cfg.Routing.SessionAffinity
 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
 		if parsed, errParse := time.ParseDuration(ttl); errParse == nil && parsed > 0 {
+			if parsed < time.Second {
+				parsed = time.Second
+			}
 			state.sessionAffinityTTL = parsed
 		}
+	}
+	if state.sessionAffinity && cfg.Routing.SessionAffinitySubagents != nil {
+		state.sessionAffinitySubagents = *cfg.Routing.SessionAffinitySubagents
 	}
 	return state
 }
 
 func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	var selector coreauth.Selector
-	if state.strategy == "fill-first" {
+	switch state.strategy {
+	case "weighted-round-robin":
+		selector = &coreauth.WeightedRoundRobinSelector{}
+	case "fill-first":
 		selector = &coreauth.FillFirstSelector{}
-	} else {
+	default:
 		selector = &coreauth.RoundRobinSelector{}
 	}
 	if state.sessionAffinity {
+		subagents := state.sessionAffinitySubagents
 		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-			Fallback: selector,
-			TTL:      state.sessionAffinityTTL,
+			Fallback:         selector,
+			TTL:              state.sessionAffinityTTL,
+			SubagentAffinity: &subagents,
 		})
 	}
 	return selector
@@ -92,6 +107,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		s.cfgMu.RUnlock()
 	}
 	if newCfg == nil {
+		return configCommit{}
+	}
+	if errValidate := newCfg.ValidateCredentialWeights(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}
 	}
 
@@ -138,6 +157,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if !s.applyPprofConfigContext(ctx, cfg) {
 		return false
 	}
+	s.applyDiscoveryConfigContext(ctx, cfg)
 	if errContext := ctx.Err(); errContext != nil {
 		return false
 	}
