@@ -132,14 +132,10 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)
-			} else {
-				models = excludeCodexEducationOnlyModels(codexPlanType, models)
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
 			}
-		} else {
-			models = excludeCodexEducationOnlyModels(codexPlanType, models)
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
@@ -274,46 +270,6 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
-}
-
-// codexEducationUnsupportedModels lists models the upstream rejects for
-// education plans. Codex advertises these models in the shared plan catalog but
-// answers a live request with HTTP 400 "model is not supported when using Codex
-// with your ChatGPT plan", so the catalog alone cannot be trusted here.
-var codexEducationUnsupportedModels = map[string]struct{}{
-	"gpt-6-astra": {},
-}
-
-// codexPlanIsEducation reports whether the plan type denotes a ChatGPT
-// education account. Upstream reports "education"; the other spellings are
-// accepted so a plan label change does not silently re-expose a model that the
-// account cannot call.
-func codexPlanIsEducation(planType string) bool {
-	switch strings.ToLower(strings.TrimSpace(planType)) {
-	case "education", "edu", "edu_plus", "edu_pro", "k12":
-		return true
-	default:
-		return false
-	}
-}
-
-// excludeCodexEducationOnlyModels drops models that education accounts are not
-// entitled to call. Other plans keep the full catalog.
-func excludeCodexEducationOnlyModels(planType string, models []*registry.ModelInfo) []*registry.ModelInfo {
-	if len(models) == 0 || !codexPlanIsEducation(planType) {
-		return models
-	}
-	filtered := make([]*registry.ModelInfo, 0, len(models))
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-		if _, blocked := codexEducationUnsupportedModels[strings.ToLower(strings.TrimSpace(model.ID))]; blocked {
-			continue
-		}
-		filtered = append(filtered, model)
-	}
-	return filtered
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

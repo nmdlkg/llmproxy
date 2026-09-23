@@ -21,6 +21,8 @@ var quotaCooldownDisabled atomic.Bool
 
 var transientErrorCooldownSeconds atomic.Int64
 
+const modelSupportRetryAfter = 24 * time.Hour
+
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
@@ -739,7 +741,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
-						next := now.Add(12 * time.Hour)
+						next := now.Add(modelSupportRetryAfter)
 						state.NextRetryAfter = next
 						suspendReason = "model_not_supported"
 						shouldSuspendModel = true
