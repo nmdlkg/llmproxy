@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/tidwall/sjson"
 	"golang.org/x/net/context"
 )
 
@@ -200,7 +202,22 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	if len(providers) == 0 {
-		return nil, "", &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("unknown provider for model %s", modelName)}
+		// The client asked for a model this proxy cannot route. Report it as a request
+		// error so streaming clients receive an actionable message instead of a
+		// gateway failure they would keep retrying. 400 is used rather than 404 to keep
+		// it distinguishable from an unregistered HTTP route.
+		// The model name is client supplied, so it is inserted through sjson rather
+		// than formatted into the JSON literal: an unescaped quote would otherwise
+		// corrupt the body or let the caller overwrite the error code.
+		body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+		body, errSet := sjson.Set(body, "error.message", "unknown provider for model "+modelName)
+		if errSet != nil {
+			body = `{"error":{"message":"unknown provider for model","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+		}
+		return nil, "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      errors.New(body),
+		}
 	}
 
 	// The thinking suffix is preserved in the model name itself, so no
@@ -224,7 +241,7 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 
 func isOpenAIImageOnlyModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
-	case "gpt-image-1.5", "gpt-image-2", "grok-imagine-image", "grok-imagine-image-quality":
+	case "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0":
 		return true
 	default:
 		return false
@@ -342,6 +359,23 @@ func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtoc
 		return fmt.Sprintf("%s(%s)", resolvedModel, suffix.RawSuffix)
 	}
 	return resolvedModel
+}
+
+// forcedFallbackUnavailableError prevents a quota fallback request from
+// silently retrying the original model when the configured fallback cannot be
+// routed by any provider.
+func forcedFallbackUnavailableError(ctx context.Context, modelName string) *interfaces.ErrorMessage {
+	if !autoroute.ForcedFallback(ctx) {
+		return nil
+	}
+	baseModel := thinking.ParseSuffix(modelName).ModelName
+	if len(util.GetProviderName(baseModel)) > 0 {
+		return nil
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadGateway,
+		Error:      fmt.Errorf("quota fallback model %q is unavailable", modelName),
+	}
 }
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {

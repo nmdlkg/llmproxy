@@ -51,6 +51,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return cfg, nil
 	}
 
+	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
+		if optional {
+			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
+			cfgOptional.NormalizePluginsConfig()
+			return cfgOptional, nil
+		}
+		return nil, errValidate
+	}
+
 	// Unmarshal the YAML data into the Config struct.
 	var cfg Config
 	// Set defaults before unmarshal so that absent keys keep defaults.
@@ -67,6 +76,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.Discovery.Enabled = false
+	cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
+	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
@@ -78,12 +90,24 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
+		return nil, errValidate
+	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
+	if cfg.Discovery.ServiceType == "" {
+		cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
+	}
+	if len(cfg.Discovery.Subtypes) == 0 {
+		cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
+	}
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
 
@@ -150,6 +174,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize xAI keys: drop entries without base-url
 	cfg.SanitizeXAIKeys()
 
+	// Sanitize Meta keys.
+	cfg.SanitizeMetaKeys()
+
 	// Sanitize Codex header defaults.
 	cfg.SanitizeCodexHeaderDefaults()
 
@@ -172,6 +199,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
 		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
 	}
+	// Normalize global OAuth request-scoped error rules.
+	cfg.SanitizeOAuthRequestScopedErrors()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()

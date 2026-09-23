@@ -105,7 +105,11 @@ func BuildAuthFromFileData(cfg *config.Config, manager *coreauth.Manager, path s
 			Now:         time.Now(),
 			IDGenerator: synthesizer.NewStableIDGenerator(),
 		}
-		if generated := synthesizer.SynthesizeAuthFile(synthesisContext, path, data); len(generated) > 0 && generated[0] != nil {
+		generated, errSynthesize := synthesizer.SynthesizeAuthFile(synthesisContext, path, data)
+		if errSynthesize != nil {
+			return nil, fmt.Errorf("invalid auth file: %w", errSynthesize)
+		}
+		if len(generated) > 0 && generated[0] != nil {
 			auth = generated[0].Clone()
 		}
 	}

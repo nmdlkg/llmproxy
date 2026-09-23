@@ -256,7 +256,20 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 }
 
 func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) error {
-	return authfiles.WriteAuthFile(ctx, h.cfg, h.authManager, name, data)
+	if errWrite := authfiles.WriteAuthFile(ctx, h.cfg, h.authManager, name, data); errWrite != nil {
+		return errWrite
+	}
+	if h.postAuthPersistHook != nil {
+		path := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
+		auth, errBuild := h.buildAuthFromFileData(path, data)
+		if errBuild != nil {
+			return errBuild
+		}
+		if errHook := h.postAuthPersistHook(ctx, auth); errHook != nil {
+			return fmt.Errorf("post-auth persist hook failed: %w", errHook)
+		}
+	}
+	return nil
 }
 
 func requestedAuthFileNamesForDelete(c *gin.Context) ([]string, error) {
