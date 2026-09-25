@@ -167,6 +167,18 @@ The upstream CI step `.github/scripts/refresh-model-catalogs.sh` overwrites
 `internal/registry/models/models.json` from `router-for-me/models`; fork-only catalog
 entries must therefore live in the overlay file, not in `models.json`.
 
+### Conflict surface after the refactor (Phases 1-5)
+
+| Metric | Before (post-merge) | After |
+| --- | --- | --- |
+| Modified upstream files | 55 | 45 |
+| Lines added / deleted in modified upstream files | `+2,573/-421` | `+1,047/-143` |
+| Largest fork hunks in upstream Go files | `config_normalization.go` +341, `config_types.go` +197/-7, `server_middleware.go` +169, `auth_files_crud.go` +15/-134 | `cmd/server/main.go` +54/-7 (unchanged), `server.go` +12, `scheduler.go` +10, `auth_files_crud.go` +9 |
+| Upstream files restored verbatim | - | `config_types.go`, `config_defaults.go`, `config_normalization.go`, `server_options.go` (one field), `auth_files.go`, `config_access/provider.go`, `selector.go`, `conductor.go`, `conductor_execution.go`, `handlers_context.go`, `handlers_model_router_test.go`, `models.json` |
+
+Most remaining lines are the security rows (redaction, usage queue, source provenance), docs and
+dependencies, and `cmd/server/main.go`, which the refactor intentionally left unchanged.
+
 ### Modified upstream file classification
 
 Categories: **seam** = tenancy or fork feature extension point; **security** = fork hardening

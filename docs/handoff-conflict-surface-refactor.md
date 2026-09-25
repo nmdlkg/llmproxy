@@ -1,6 +1,6 @@
 # Conflict Surface Reduction Refactor — Handoff Draft
 
-Draft plan — no implementation started.
+Status: Phases 0-5 implemented on stacked local branches `chore/upstream-v7.3.17` → `refactor/conflict-surface-p1-config` → `p2-server` → `p3-authpersist` → `p4-sdk-seams` → `p5-model-overlay`. Upstream PR candidates are on local `upstream-pr/*` branches. Nothing is pushed or deployed. See [`docs/fork-patches.md`](fork-patches.md) sections 3, 4, and 6 for the resulting seams and metrics.
 
 ## Current baseline
 
