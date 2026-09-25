@@ -25,7 +25,7 @@ run go test ./sdk/api/handlers -run '^(TestResolveAutoRoutedModel|TestAutoRoutin
 run go test ./internal/access/...
 
 # Seam 5: tenancy middleware and route insertion, including realtime routes.
-run go test ./internal/api -run 'TestCredentialValidationMiddleware|TestUserQuotaMiddleware|TestQuotaFallback|Realtime|TenantPolicy|ForkRuntime'
+run go test ./internal/api -run 'TestCredentialValidationMiddleware|TestUserQuotaMiddleware|TestQuotaFallback|Realtime|TenantPolicy|ForkRuntime|OTel'
 
 # Seam 6: typed tenancy, auto-routing, OpenRouter, and OTel configuration.
 run go test ./internal/config

@@ -19,7 +19,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	userHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/user"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -27,13 +26,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/userpanelasset"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
@@ -88,16 +83,12 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
-	user *userHandlers.Handler
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
-	// userPanelAsset and userPanelSupervisor are instance-owned. The supervisor
-	// performs background update work; request handlers only read the configured
-	// local development file or verified release cache.
-	userPanelAsset      *userpanelasset.Manager
-	userPanelSupervisor *userpanelasset.Supervisor
+	// fork owns fork-specific dependencies; see server_fork.go.
+	fork *forkRuntime
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -117,12 +108,6 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
-
-	tenancyService *tenancy.Service
-	tenancyInitErr error
-
-	otelUsageSink    *otelUsageSink
-	otelUsageInitErr error
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -193,13 +178,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
 
-	// The panel is maintained in the separate CLIProxyAPI-User-Panel repository.
-	// The backend serves its configured local build or verified release cache;
-	// it no longer embeds a frontend copy that can drift from that repository.
-	panelAsset := userpanelasset.NewManager(configFilePath)
-	panelSupervisor := userpanelasset.NewSupervisor(panelAsset)
-	panelSupervisor.SetConfig(cfg)
-
 	// Create server instance
 	s := &Server{
 		engine:              engine,
@@ -213,45 +191,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
-		userPanelAsset:      panelAsset,
-		userPanelSupervisor: panelSupervisor,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
-	if optionState.tenancyEnabled {
-		tenancyService, errTenancy := tenancy.NewService(cfg.Tenancy, cfg.AuthDir, authManager)
-		if errTenancy != nil {
-			s.tenancyInitErr = errTenancy
-			log.WithError(errTenancy).Error("failed to initialize tenancy service")
-		} else {
-			s.tenancyService = tenancyService
-		}
-	}
-	if optionState.otelUsageEnabled {
-		otelOptions, usedEnvironmentFallback, errOptions := otelUsageOptions(cfg)
-		if usedEnvironmentFallback {
-			warnOTelEnvironmentFallback()
-		}
-		if errOptions != nil {
-			s.otelUsageInitErr = errOptions
-			log.WithError(errOptions).Error("failed to configure OpenTelemetry usage export")
-		} else {
-			otelSink, errOTelUsage := registerOTelUsage(
-				context.Background(),
-				otelOptions,
-				tenancyUsageEmailResolver(s.tenancyService),
-				coreusage.RegisterNamedPlugin,
-			)
-			if errOTelUsage != nil {
-				s.otelUsageInitErr = errOTelUsage
-				log.WithError(errOTelUsage).Error("failed to initialize OpenTelemetry usage export")
-			} else {
-				s.otelUsageSink = otelSink
-			}
-		}
-	}
+	s.fork = newForkRuntime(cfg, configFilePath, authManager, optionState.fork)
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
@@ -282,14 +227,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthPersistHook != nil {
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
-	s.user = userHandlers.NewHandler(
-		cfg,
-		authManager,
-		s.tenancyService,
-		sdkAuth.GetTokenStore(),
-		s.mgmt,
-	)
-	s.user.SetUserPanelAsset(panelAsset)
+	s.fork.attachManagement(cfg, authManager, s.mgmt)
 	s.localPassword = optionState.localPassword
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
@@ -325,9 +263,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: engine,
 	}
-	if optionState.otelUsageEnabled {
-		armOTelReloadNotice()
-	}
 
 	return s
 }
@@ -358,11 +293,8 @@ func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
-	if s.tenancyInitErr != nil {
-		return fmt.Errorf("failed to start HTTP server: initialize tenancy: %w", s.tenancyInitErr)
-	}
-	if s.otelUsageInitErr != nil {
-		return fmt.Errorf("failed to start HTTP server: initialize OpenTelemetry usage export: %w", s.otelUsageInitErr)
+	if errFork := s.fork.startErr(); errFork != nil {
+		return fmt.Errorf("failed to start HTTP server: %w", errFork)
 	}
 
 	addr := s.server.Addr
@@ -409,10 +341,7 @@ func (s *Server) Start() error {
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
 	s.listenerMu.Unlock()
-	if s.userPanelSupervisor != nil {
-		s.userPanelSupervisor.Start(context.Background())
-		defer s.userPanelSupervisor.Stop()
-	}
+	defer s.fork.start(context.Background())()
 
 	httpErrCh := make(chan error, 1)
 	acceptErrCh := make(chan error, 1)
@@ -494,9 +423,6 @@ func (s *Server) Stop(ctx context.Context) error {
 		default:
 		}
 	}
-	if s.userPanelSupervisor != nil {
-		s.userPanelSupervisor.Stop()
-	}
 
 	s.listenerMu.Lock()
 	muxHTTP := s.muxHTTPListener
@@ -525,24 +451,11 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
-	var stopErrors []error
+	if errFork := s.fork.stop(ctx, errCloseServer); errFork != nil {
+		return errFork
+	}
 	if errCloseServer != nil {
-		stopErrors = append(stopErrors, fmt.Errorf("failed to shutdown HTTP server: %w", errCloseServer))
-	}
-	if s.otelUsageSink != nil {
-		if otelPlugin := s.otelUsageSink.detach(); otelPlugin != nil {
-			if errShutdownOTel := otelPlugin.Shutdown(ctx); errShutdownOTel != nil {
-				stopErrors = append(stopErrors, errShutdownOTel)
-			}
-		}
-	}
-	if s.tenancyService != nil {
-		if errCloseTenancy := s.tenancyService.Close(); errCloseTenancy != nil {
-			stopErrors = append(stopErrors, errCloseTenancy)
-		}
-	}
-	if len(stopErrors) > 0 {
-		return errors.Join(stopErrors...)
+		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)
 	}
 
 	log.Debug("API server stopped")

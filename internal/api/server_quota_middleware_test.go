@@ -355,23 +355,23 @@ func newQuotaFallbackTestServer(t *testing.T, autoRoutingEnabled bool) (*Server,
 	}
 	authManager := coreauth.NewManager(nil, nil, nil)
 	server := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(dataDir, "config.yaml"), WithTenancyService())
-	if server.tenancyInitErr != nil {
-		t.Fatalf("NewServer() tenancy error = %v", server.tenancyInitErr)
+	if server.fork.tenancyInitErr != nil {
+		t.Fatalf("NewServer() tenancy error = %v", server.fork.tenancyInitErr)
 	}
-	if server.tenancyService == nil {
+	if server.fork.tenancyService == nil {
 		t.Fatal("NewServer() tenancy service is nil")
 	}
 	t.Cleanup(func() {
-		if errClose := server.tenancyService.Close(); errClose != nil {
+		if errClose := server.fork.tenancyService.Close(); errClose != nil {
 			t.Errorf("tenancy service Close() error = %v", errClose)
 		}
 	})
 
 	user := &tenancy.User{Email: "quota@example.com", Role: tenancy.RoleUser, Tier: "default"}
-	if errCreate := server.tenancyService.Store().CreateUser(user); errCreate != nil {
+	if errCreate := server.fork.tenancyService.Store().CreateUser(user); errCreate != nil {
 		t.Fatalf("CreateUser() error = %v", errCreate)
 	}
-	apiKey, _, errIssue := server.tenancyService.Store().IssueAPIKey(user.ID, "quota-test")
+	apiKey, _, errIssue := server.fork.tenancyService.Store().IssueAPIKey(user.ID, "quota-test")
 	if errIssue != nil {
 		t.Fatalf("IssueAPIKey() error = %v", errIssue)
 	}

@@ -57,13 +57,11 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
-	rejectUnsupportedFallback := rejectForcedQuotaFallback()
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
-	v1.Use(s.credentialValidationMiddleware())
-	v1.Use(s.userQuotaMiddleware())
+	v1.Use(s.tenantPolicy()...)
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -80,22 +78,22 @@ func (s *Server) setupRoutes() {
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		v1.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
-		v1.POST("/live", rejectUnsupportedFallback, s.codexLiveHandler.Handle)
-		v1.GET("/live/:call_id", rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+		v1.POST("/alpha/search", s.codexAlphaSearch)
+		v1.POST("/live", s.codexLiveHandler.Handle)
+		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
 	}
 
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
 	standardAuth := realtimeStandardAuthMiddleware(s.accessManager)
-	s.engine.GET("/v1/realtime", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.HandleRealtimeWebsocket)
-	s.engine.POST("/v1/realtime", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.Handle)
-	s.engine.POST("/v1/realtime/calls", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.Handle)
-	s.engine.GET("/v1/realtime/calls/:call_id", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.HandleSideband)
+	s.engine.GET("/v1/realtime", s.tenantChain(realtimeAuth, s.codexLiveHandler.HandleRealtimeWebsocket)...)
+	s.engine.POST("/v1/realtime", s.tenantChain(realtimeAuth, s.codexLiveHandler.Handle)...)
+	s.engine.POST("/v1/realtime/calls", s.tenantChain(realtimeAuth, s.codexLiveHandler.Handle)...)
+	s.engine.GET("/v1/realtime/calls/:call_id", s.tenantChain(realtimeAuth, s.codexLiveHandler.HandleSideband)...)
 	s.engine.POST("/v1/realtime/client_secrets", standardAuth, s.codexLiveHandler.CreateClientSecret)
 	s.engine.POST("/v1/realtime/sessions", standardAuth, s.codexLiveHandler.CreateLegacySession)
 	s.engine.POST("/v1/realtime/transcription_sessions", standardAuth, s.codexLiveHandler.HandleTranscriptionSession)
-	s.engine.GET("/v1/realtime/translations", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.HandleTranslation)
-	s.engine.POST("/v1/realtime/translations", realtimeAuth, s.credentialValidationMiddleware(), s.userQuotaMiddleware(), rejectUnsupportedFallback, s.codexLiveHandler.HandleTranslation)
+	s.engine.GET("/v1/realtime/translations", s.tenantChain(realtimeAuth, s.codexLiveHandler.HandleTranslation)...)
+	s.engine.POST("/v1/realtime/translations", s.tenantChain(realtimeAuth, s.codexLiveHandler.HandleTranslation)...)
 	s.engine.POST("/v1/realtime/translations/client_secrets", standardAuth, s.codexLiveHandler.HandleTranslation)
 	s.engine.POST("/v1/realtime/calls/:call_id/hangup", standardAuth, s.codexLiveHandler.HandleHangup)
 	s.engine.POST("/v1/realtime/calls/:call_id/accept", standardAuth, s.codexLiveHandler.HandleSIPControl)
@@ -104,8 +102,7 @@ func (s *Server) setupRoutes() {
 
 	openaiV1 := s.engine.Group("/openai/v1")
 	openaiV1.Use(AuthMiddleware(s.accessManager))
-	openaiV1.Use(s.credentialValidationMiddleware())
-	openaiV1.Use(s.userQuotaMiddleware())
+	openaiV1.Use(s.tenantPolicy()...)
 	{
 		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
 		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
@@ -115,20 +112,18 @@ func (s *Server) setupRoutes() {
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
-	codexDirect.Use(s.credentialValidationMiddleware())
-	codexDirect.Use(s.userQuotaMiddleware())
+	codexDirect.Use(s.tenantPolicy()...)
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
-		codexDirect.POST("/alpha/search", rejectUnsupportedFallback, s.codexAlphaSearch)
+		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
 	}
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
-	v1beta.Use(s.credentialValidationMiddleware())
-	v1beta.Use(s.userQuotaMiddleware())
+	v1beta.Use(s.tenantPolicy()...)
 	{
 		v1beta.GET("/models", s.geminiModelsHandler(geminiHandlers))
 		v1beta.POST("/interactions", geminiHandlers.Interactions)
