@@ -74,8 +74,41 @@ behavioral regression. The commands below were run successfully against the curr
 
 Seams 1, 2, and 3 are purely additive extension points. When they are unset, the existing
 attribute-priority, normal scheduler, and registry-based model-routing behavior remains the default.
-They are therefore candidates for upstream pull requests. If accepted upstream, the corresponding
-fork patches can be deleted instead of carried through future merges.
+Local branches based on `upstream/main` (`v7.3.17`) carry each proposal with tests. They are
+**not pushed**; submitting them needs separate approval. If upstream accepts one, delete the
+matching fork file in the next sync instead of carrying both versions.
+
+| Branch | Upstream change | Fork cleanup after acceptance |
+| --- | --- | --- |
+| `upstream-pr/priority-resolver` | `sdk/cliproxy/auth/scheduler_priority.go` (+ test), four hook lines in `scheduler.go` | Delete fork `scheduler_priority.go`; keep `tenancy` calling `SetPriorityResolver` |
+| `upstream-pr/preferred-auth-ids` | `sdk/cliproxy/auth/scheduler_preferred.go`, `sdk/api/handlers/handlers_preferred_auth.go` (+ tests), two hooks in `scheduler.go`, one in `handlers.go` | Delete both fork files and their tests |
+| `upstream-pr/model-name-resolver` | New generic `BaseAPIHandler.ModelNameResolver` hook applied at the three execution entry points | Replace the fork's `resolveAutoRoutedModel` call sites with a resolver installed from `internal/api`; keep forced-fallback handling fork-owned |
+
+PR body drafts:
+
+- **feat(auth): add optional effective priority resolver to the scheduler.** Embedders sometimes
+  need a credential's scheduling priority to follow runtime data (for example, prefer
+  credentials whose quota window resets soon) without rewriting the `priority` attribute on
+  disk. `Manager.SetPriorityResolver` installs a `func(*Auth) (int, bool)`; the scheduler
+  applies it when entries are upserted and re-buckets existing entries on install. Unset, or
+  `ok == false`, keeps today's attribute priority, so default behavior is unchanged. Test:
+  `TestSchedulerPriorityResolver`.
+- **feat(auth): add soft preferred auth IDs first pass.** Middleware can ask the scheduler to try
+  specific credentials first (for example to validate a credential with real traffic) without
+  pinning. `WithPreferredAuthIDs(ctx, ids)` adds `preferred_auth_ids` to execution metadata. On
+  an unpinned first attempt the scheduler runs its normal selection with every non-preferred
+  credential treated as already tried; if no preferred credential is ready it falls through to
+  normal selection. Cooldowns, disabled state, model support, weights, websocket preference, and
+  cursors are unchanged. Tests: `TestSchedulerPreferredAuth*`, `TestPreferredAuthIDsFromMetadata`,
+  `TestWithPreferredAuthIDs*`.
+- **feat(handlers): add optional model name resolver hook.** Lets embedders map a virtual model
+  (for example `auto`) to a concrete model before plugin model routing and provider selection,
+  at the non-streaming, streaming, and count entry points. The original requested model is
+  still reported under `RequestedModelMetadataKey`. Nil or empty results keep the requested
+  model. Test: `TestModelNameResolverExecutionEntryPointsPreserveOriginalRequestedModel`.
+
+The security rows in section 6 (header/query/body redaction, no API key in the usage queue,
+source provenance) are separate upstream candidates and have no branch yet.
 
 ## 5. Known layering note
 
