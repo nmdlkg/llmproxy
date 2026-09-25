@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/authfiles"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	userHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/user"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -94,11 +95,16 @@ func (f *forkRuntime) initOTelUsage(cfg *config.Config) {
 	f.otelUsageSink = otelSink
 }
 
-// attachManagement creates the tenant user API handler once the management
-// handler exists, because tenant OAuth flows reuse its persistence path.
-func (f *forkRuntime) attachManagement(cfg *config.Config, authManager *auth.Manager, mgmt *managementHandlers.Handler) {
+// attachManagement installs the owner-stamping post-auth hook around the
+// optional custom hook and creates the tenant user API handler once the
+// management handler exists, because tenant OAuth flows and uploads reuse its
+// persistence path.
+func (f *forkRuntime) attachManagement(cfg *config.Config, authManager *auth.Manager, mgmt *managementHandlers.Handler, postAuthHook auth.PostAuthHook) {
 	if f == nil {
 		return
+	}
+	if mgmt != nil {
+		mgmt.SetPostAuthHook(authfiles.ComposeOwnerStampHook(postAuthHook))
 	}
 	f.user = userHandlers.NewHandler(
 		cfg,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/authfiles"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/userpanelasset"
@@ -47,6 +48,7 @@ type Handler struct {
 	service         *tenancy.Service
 	tokenStore      coreauth.Store
 	oauth           oauthHandlers
+	persister       authfiles.RecordPersister
 	panel           UserPanelAsset
 	credentialMu    sync.Mutex
 	quotaMu         sync.Mutex
@@ -69,7 +71,7 @@ func NewHandler(
 			baseDirSetter.SetBaseDir(cfg.AuthDir)
 		}
 	}
-	return &Handler{
+	h := &Handler{
 		cfg:             cfg,
 		authManager:     authManager,
 		service:         service,
@@ -78,6 +80,12 @@ func NewHandler(
 		quotaCache:      make(map[string]providerQuotaCacheEntry),
 		quotaFetchSlots: make(chan struct{}, providerQuotaParallel),
 	}
+	// The management handler also parses and registers uploaded auth files, so
+	// tenant uploads share its upstream persistence rules.
+	if persister, ok := oauth.(authfiles.RecordPersister); ok {
+		h.persister = persister
+	}
+	return h
 }
 
 // SetConfig updates the live config snapshot used by user operations after a

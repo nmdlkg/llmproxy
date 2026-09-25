@@ -22,9 +22,14 @@ var ErrCredentialExists = errors.New("This account is already registered. You ca
 var RegistrationMu sync.Mutex
 
 // CheckUserRegistration must be called under RegistrationMu before persistence.
-func CheckUserRegistration(ctx context.Context, cfg *config.Config, manager *coreauth.Manager, record *coreauth.Auth) error {
+// ids resolves on-disk auth file paths to runtime auth IDs so renamed files and
+// pending watcher loads are matched by the same IDs the manager uses.
+func CheckUserRegistration(ctx context.Context, cfg *config.Config, manager *coreauth.Manager, ids AuthIDResolver, record *coreauth.Auth) error {
 	if user, ok := tenancy.UserFromContext(ctx); !ok || strings.TrimSpace(user.ID) == "" {
 		return nil
+	}
+	if ids == nil {
+		return fmt.Errorf("auth ID resolver unavailable")
 	}
 	keys := make(map[string]bool)
 	for _, key := range coreauth.CredentialIdentityKeys(record) {
@@ -73,7 +78,7 @@ func CheckUserRegistration(ctx context.Context, cfg *config.Config, manager *cor
 			return fmt.Errorf("inspect registered credential: %w", errDecode)
 		}
 		provider, _ := metadata["type"].(string)
-		if matches(&coreauth.Auth{ID: AuthIDForPath(cfg, path), FileName: entry.Name(), Provider: provider, Metadata: metadata}) {
+		if matches(&coreauth.Auth{ID: ids.AuthIDForPath(path), FileName: entry.Name(), Provider: provider, Metadata: metadata}) {
 			return ErrCredentialExists
 		}
 		return nil

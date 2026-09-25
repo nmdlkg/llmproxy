@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/access/keyextract"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -60,27 +59,62 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 	if len(p.keys) == 0 {
 		return nil, sdkaccess.NewNotHandledError()
 	}
-	extracted := keyextract.FromRequest(r)
-	if !extracted.Presented {
+	authHeader := r.Header.Get("Authorization")
+	authHeaderGoogle := r.Header.Get("X-Goog-Api-Key")
+	authHeaderAnthropic := r.Header.Get("X-Api-Key")
+	queryKey := ""
+	queryAuthToken := ""
+	if r.URL != nil {
+		queryKey = r.URL.Query().Get("key")
+		queryAuthToken = r.URL.Query().Get("auth_token")
+	}
+	if authHeader == "" && authHeaderGoogle == "" && authHeaderAnthropic == "" && queryKey == "" && queryAuthToken == "" {
 		return nil, sdkaccess.NewNoCredentialsError()
 	}
 
-	for _, candidate := range extracted.Candidates {
-		if candidate.Value == "" {
+	apiKey := extractBearerToken(authHeader)
+
+	candidates := []struct {
+		value  string
+		source string
+	}{
+		{apiKey, "authorization"},
+		{authHeaderGoogle, "x-goog-api-key"},
+		{authHeaderAnthropic, "x-api-key"},
+		{queryKey, "query-key"},
+		{queryAuthToken, "query-auth-token"},
+	}
+
+	for _, candidate := range candidates {
+		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.Value]; ok {
+		if _, ok := p.keys[candidate.value]; ok {
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
-				Principal: candidate.Value,
+				Principal: candidate.value,
 				Metadata: map[string]string{
-					"source": candidate.Source,
+					"source": candidate.source,
 				},
 			}, nil
 		}
 	}
 
 	return nil, sdkaccess.NewInvalidCredentialError()
+}
+
+func extractBearerToken(header string) string {
+	if header == "" {
+		return ""
+	}
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 {
+		return header
+	}
+	if strings.ToLower(parts[0]) != "bearer" {
+		return header
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 func normalizeKeys(keys []string) []string {

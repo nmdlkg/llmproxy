@@ -112,7 +112,7 @@ func TestForkRuntimeNilSafe(t *testing.T) {
 	}
 	runtime.start(context.Background())()
 	runtime.reload(&config.Config{})
-	runtime.attachManagement(nil, nil, nil)
+	runtime.attachManagement(nil, nil, nil, nil)
 	if errStop := runtime.stop(context.Background(), nil); errStop != nil {
 		t.Fatalf("nil stop = %v", errStop)
 	}
