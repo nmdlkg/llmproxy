@@ -103,3 +103,69 @@ grep -rn "CLIProxyAPI/v7/internal/" sdk/ --include=*.go | grep -v _test | wc -l
 
 It returns `153`. That existing layering is part of the upstream baseline; the fork-specific changes
 should remain limited to their documented seams.
+
+## 6. Upstream baseline and conflict surface (Phase 0)
+
+Recorded for the conflict-surface refactor described in
+[`handoff-conflict-surface-refactor.md`](handoff-conflict-surface-refactor.md).
+
+| Item | Value |
+| --- | --- |
+| Upstream tag merged | `v7.3.17` (`9bdde54b`) on branch `chore/upstream-v7.3.17` |
+| Fork head before merge | `9da8ff1c` (`main`, `origin/main`) |
+| Production release accepting `9da8ff1c` | **Pending operator confirmation.** `/var/lib/cliproxy-deploy` is root-only; record the release ID and rollback state from `rollout.py status` here. |
+| Phase 0 release candidate | `20260925T063219Z-30472e260861` (`deploy/safe-rollout/build.sh`, full tests passed) |
+| `git diff --shortstat upstream/main...HEAD` after merge | 184 files, `+26,298/-421` |
+| Added / modified upstream files | 129 added, **55 modified** (`+2,573/-421` in modified files) |
+| `git config rerere.enabled` | `true` |
+
+Conflicts resolved in this merge: `internal/api/server.go` (listener mutex vs. user-panel
+supervisor and fork stop errors), `internal/redisqueue/plugin.go` (execution/trace IDs vs.
+tenant attribution), `internal/runtime/executor/helps/usage_helpers.go` (trace IDs vs.
+source provenance). Silent breakages the merge produced and that the build caught:
+a `config -> otelusage -> sdk/cliproxy/usage -> logging -> config` import cycle (fixed by the
+dependency-free `internal/otelusage/otelspec`), and a dropped `strconv` import in
+`internal/watcher/synthesizer/file.go`. Upstream `377747b8` made static Antigravity
+`native_capabilities.web_search` authoritative, so the fork's reset of `SupportsWebSearch`
+before applying probe hints was dropped.
+
+The upstream CI step `.github/scripts/refresh-model-catalogs.sh` overwrites
+`internal/registry/models/models.json` from `router-for-me/models`; fork-only catalog
+entries must therefore live in the overlay file, not in `models.json`.
+
+### Modified upstream file classification
+
+Categories: **seam** = tenancy or fork feature extension point; **security** = fork hardening
+kept as-is and proposed upstream; **noise** = no behavior; **decl** = field or constant
+declaration that must stay in the upstream type. The phase column names the refactor phase
+that shrinks the file; `-` means the change stays as-is.
+
+| File(s) | Category | Phase |
+| --- | --- | --- |
+| `internal/config/config_types.go`, `config_normalization.go`, `config_load.go`, `parse.go`, `config_defaults.go` | seam | 1 |
+| `internal/config/config.go`, `sdk_config.go`, `config_yaml.go` | decl | - |
+| `internal/api/server.go`, `server_reload.go`, `server_options.go`, `server_middleware.go`, `server_routes.go` | seam | 2 |
+| `cmd/server/main.go` | seam (CLI flags, remote store, OpenRouter updater) | - |
+| `internal/api/handlers/management/auth_files.go`, `auth_files_crud.go`, `auth_files_fields.go` | seam | 3 |
+| `internal/api/handlers/management/auth_files_provider_oauth.go`, `oauth_sessions.go`, `oauth_callback.go` (+ tests) | seam (OAuth session owner binding) | - |
+| `internal/access/config_access/provider.go` | seam | 3 |
+| `internal/access/reconcile.go` | seam 4 | - |
+| `internal/watcher/synthesizer/file.go` | seam (ownership attributes) | - |
+| `sdk/api/handlers/handlers.go`, `handlers_context.go`, `handlers_routing.go`, `handlers_stream.go`, `handlers_execution.go`, `handlers_model_router_test.go` | seam 3 | 4 |
+| `sdk/cliproxy/auth/scheduler.go`, `selector.go`, `conductor.go`, `conductor_execution.go`, `conductor_selection.go` | seams 0-2 | 4 |
+| `internal/registry/models/models.json` | seam (fork catalog entries) | 5 |
+| `sdk/cliproxy/service_models.go` | seam (Codex plan catalog mapping) | - |
+| `internal/util/provider.go`, `internal/api/middleware/request_logging.go`, `response_writer.go` (+ test) | security (header, query, and body redaction) | - |
+| `internal/redisqueue/plugin.go`, `sdk/cliproxy/usage/manager.go`, `internal/runtime/executor/helps/usage_helpers.go`, `logging_helpers.go` (+ test) | security (no API key in queue, source provenance) and tenant attribution | - |
+| `sdk/config/config.go` | decl (SDK type aliases) | - |
+| `internal/pluginhost/host.go`, `internal/runtime/executor/claude_thinking_replay_test.go`, `codex_stream_bootstrap_buffering_test.go` | noise (gofmt; listed in `.github/scripts/gofmt-allowlist.txt`) | - |
+| `go.mod`, `go.sum`, `config.example.yaml`, `.gitignore` | dependencies and docs | - |
+
+The security rows are upstream pull request candidates. Do not refactor them in the
+conflict-surface phases.
+
+### Continuous checks
+
+`.github/workflows/fork-seams.yml` runs `.github/scripts/fork-seam-checks.sh` (every focused
+command in section 3 plus the race tests), the full suite, and a server build. Run the script
+locally after every upstream merge.

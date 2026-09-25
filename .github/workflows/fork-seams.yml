@@ -1,0 +1,41 @@
+name: fork-seams
+
+# Fork-owned workflow. Upstream workflows are left untouched so upstream merges
+# never conflict here. See docs/fork-patches.md for the seam ledger.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "chore/upstream-*"
+
+permissions:
+  contents: read
+
+jobs:
+  seams:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format
+        run: |
+          # Upstream ships a few files that the pinned gofmt rewrites; they are
+          # tracked in docs/fork-patches.md and excluded here.
+          unformatted="$(gofmt -l . | grep -vxF -f .github/scripts/gofmt-allowlist.txt || true)"
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Fork seam checks
+        run: bash .github/scripts/fork-seam-checks.sh
+      - name: Full test suite
+        run: go test ./...
+      - name: Build
+        run: go build -o /tmp/cli-proxy-api ./cmd/server
