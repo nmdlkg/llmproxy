@@ -1,0 +1,149 @@
+{
+  "tenancy": {
+    "enabled": true,
+    "validation-interval": "1h",
+    "quota": {
+      "enforce": false,
+      "window": "168h",
+      "base-usd": {
+        "default": 5.0
+      },
+      "contribution-usd": {
+        "claude": {
+          "default": 8.0
+        },
+        "codex": {
+          "free": 1.0,
+          "plus": 8.0,
+          "pro": 20.0,
+          "team": 12.0
+        },
+        "gemini": {
+          "default": 5.0
+        }
+      },
+      "model-price-overrides": {
+        "*": {
+          "prompt": 0.075,
+          "completion": 0.3,
+          "reasoning": 0.3,
+          "cache-read": 0.075,
+          "cache-write": 0.075
+        },
+        "gemini-2.5-flash": {
+          "prompt": 0.3,
+          "completion": 2.5,
+          "reasoning": 2.5,
+          "cache-read": 0.075,
+          "cache-write": 0.3
+        }
+      },
+      "provider-windows": {
+        "claude": "5h",
+        "codex": "5h",
+        "gemini": "24h"
+      }
+    },
+    "balancing": {
+      "urgency-horizon": "30m",
+      "high-water": 0.9,
+      "urgency-bonus": 1
+    },
+    "user-panel": {
+      "github-repository": "https://github.com/nmdlkg/CLIProxyAPI-User-Panel",
+      "disable-auto-update": false,
+      "dev-mode": false
+    }
+  },
+  "tenancy-pricing": {
+    "enabled": true,
+    "base-url": "https://openrouter.ai/api/v1",
+    "refresh-interval": "6h",
+    "model-map": {
+      "claude-fable-5-1": "anthropic/claude-fable-5.1",
+      "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+      "claude-opus-4-7": "anthropic/claude-opus-4.7",
+      "claude-opus-4-8": "anthropic/claude-opus-4.8",
+      "claude-opus-5": "anthropic/claude-opus-5",
+      "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+      "claude-sonnet-5": "anthropic/claude-sonnet-5",
+      "codex-auto-review": "openai/gpt-5.6-luna",
+      "gemini-2.5-flash": "google/gemini-2.5-flash",
+      "gpt-5.3-codex-spark": "openai/gpt-5.3-codex",
+      "gpt-5.4-mini-fast": "openai/gpt-5.4-mini",
+      "gpt-5.5-fast": "openai/gpt-5.5",
+      "gpt-5.6-luna": "openai/gpt-5.6-luna",
+      "gpt-5.6-sol": "openai/gpt-5.6-sol",
+      "gpt-5.6-terra": "openai/gpt-5.6-terra"
+    },
+    "cost-basis": "openrouter"
+  },
+  "auto-routing": {
+    "enabled": false,
+    "router-url": "http://127.0.0.1:8080",
+    "timeout-ms": 800,
+    "min-confidence": 0.5,
+    "cache-ttl-seconds": 300,
+    "max-prompt-chars": 4000,
+    "default-tier": "balanced",
+    "fallback-model": "gpt-5.6-luna",
+    "quota-fallback": true,
+    "tiers": {
+      "balanced": {
+        "models": [
+          "gpt-5.6-terra",
+          "claude-sonnet-5"
+        ]
+      },
+      "cheap": {
+        "models": [
+          "gpt-5.6-luna"
+        ]
+      },
+      "strong": {
+        "models": [
+          "claude-opus-5",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    "categories": {
+      "code": "strong",
+      "creative": "balanced",
+      "general": "cheap",
+      "math": "strong"
+    }
+  },
+  "openrouter": {
+    "enabled": true,
+    "base-url": "https://openrouter.ai/api/v1",
+    "refresh-interval": "6h",
+    "model-map": {
+      "claude-fable-5-1": "anthropic/claude-fable-5.1",
+      "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+      "claude-opus-4-7": "anthropic/claude-opus-4.7",
+      "claude-opus-4-8": "anthropic/claude-opus-4.8",
+      "claude-opus-5": "anthropic/claude-opus-5",
+      "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+      "claude-sonnet-5": "anthropic/claude-sonnet-5",
+      "codex-auto-review": "openai/gpt-5.6-luna",
+      "gemini-2.5-flash": "google/gemini-2.5-flash",
+      "gpt-5.3-codex-spark": "openai/gpt-5.3-codex",
+      "gpt-5.4-mini-fast": "openai/gpt-5.4-mini",
+      "gpt-5.5-fast": "openai/gpt-5.5",
+      "gpt-5.6-luna": "openai/gpt-5.6-luna",
+      "gpt-5.6-sol": "openai/gpt-5.6-sol",
+      "gpt-5.6-terra": "openai/gpt-5.6-terra"
+    },
+    "cost-basis": "openrouter"
+  },
+  "otel": {
+    "enabled": false,
+    "endpoint": "",
+    "export-interval": "15s",
+    "service-name": "llmproxy",
+    "service-version": "",
+    "environment": "",
+    "resource-attributes": null
+  }
+}

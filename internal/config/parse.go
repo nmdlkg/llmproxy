@@ -39,7 +39,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
 	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
-	cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	applyForkConfigDefaults(&cfg)
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -76,11 +76,6 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
-	cfg.Tenancy.UserPanel.GitHubRepository = strings.TrimSpace(cfg.Tenancy.UserPanel.GitHubRepository)
-	if cfg.Tenancy.UserPanel.GitHubRepository == "" {
-		cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
-	}
-	cfg.Tenancy.UserPanel.PinnedVersion = strings.TrimSpace(cfg.Tenancy.UserPanel.PinnedVersion)
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -124,14 +119,11 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
-	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
-		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
-	}
 	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
-	cfg.SanitizeTenancyConfig()
-	cfg.SanitizeAutoRoutingConfig()
-	cfg.SanitizeOpenRouterConfig()
+	if errFork := normalizeForkConfig(&cfg); errFork != nil {
+		return nil, errFork
+	}
 
 	return &cfg, nil
 }

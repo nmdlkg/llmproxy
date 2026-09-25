@@ -80,7 +80,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
 	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
-	cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	applyForkConfigDefaults(&cfg)
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -130,11 +130,6 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
-	cfg.Tenancy.UserPanel.GitHubRepository = strings.TrimSpace(cfg.Tenancy.UserPanel.GitHubRepository)
-	if cfg.Tenancy.UserPanel.GitHubRepository == "" {
-		cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
-	}
-	cfg.Tenancy.UserPanel.PinnedVersion = strings.TrimSpace(cfg.Tenancy.UserPanel.PinnedVersion)
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -201,24 +196,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
-	// Normalize and validate process-static OpenTelemetry export settings.
-	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
-		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
-	}
 	// Normalize global OAuth request-scoped error rules.
 	cfg.SanitizeOAuthRequestScopedErrors()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-	// Normalize multi-user tenancy settings and apply defaults.
-	cfg.SanitizeTenancyConfig()
-
-	// Normalize automatic model routing settings and apply defaults.
-	cfg.SanitizeAutoRoutingConfig()
-
-	// Normalize OpenRouter catalog settings and apply defaults.
-	cfg.SanitizeOpenRouterConfig()
+	// Normalize fork-owned sections (OTel, tenancy, auto-routing, OpenRouter).
+	if errFork := normalizeForkConfig(&cfg); errFork != nil {
+		return nil, errFork
+	}
 
 	// Return the populated configuration struct.
 	return &cfg, nil
