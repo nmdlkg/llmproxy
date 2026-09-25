@@ -44,9 +44,9 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	modelName = h.resolveAutoRoutedModel(ctx, entryProtocol, modelName, rawJSON)
-	if errFallback := forcedFallbackUnavailableError(ctx, modelName); errFallback != nil {
-		return nil, nil, errFallback
+	modelName, errFork := h.resolveForkModel(ctx, entryProtocol, modelName, rawJSON)
+	if errFork != nil {
+		return nil, nil, errFork
 	}
 	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)

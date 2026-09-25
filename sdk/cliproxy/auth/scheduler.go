@@ -270,16 +270,6 @@ func (s *authScheduler) needsSyncFromMapLocked(auths map[string]*Auth) bool {
 	return false
 }
 
-// setPriorityResolver updates the resolver used when scheduler entries are upserted.
-func (s *authScheduler) setPriorityResolver(resolver PriorityResolver) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.priorityResolver = resolver
-}
-
 // rebuild recreates the complete scheduler state from an auth snapshot.
 func (s *authScheduler) rebuild(auths []*Auth) {
 	if s == nil {
@@ -413,6 +403,9 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	if s == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+	if picked, ok := s.pickPreferredSingle(ctx, provider, model, &opts, tried, strategy); ok {
+		return picked, nil
+	}
 	providerKey := canonicalSchedulingProvider(provider)
 	modelKey := canonicalModelKey(model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
@@ -433,19 +426,6 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
-	preferredAuthIDs := preferredAuthIDsFromMetadata(opts.Metadata)
-	if pinnedAuthID == "" && len(tried) == 0 && len(preferredAuthIDs) > 0 {
-		preferredPredicate := func(entry *scheduledAuth) bool {
-			if !predicate(entry) {
-				return false
-			}
-			_, ok := preferredAuthIDs[entry.auth.ID]
-			return ok
-		}
-		if picked := shard.pickReadyLocked(preferWebsocket, strategy, preferredPredicate); picked != nil {
-			return picked, nil
-		}
-	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
@@ -469,6 +449,9 @@ func (s *authScheduler) pickMixed(ctx context.Context, providers []string, model
 func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, strategy schedulerStrategy) (*Auth, string, error) {
 	if s == nil {
 		return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+	}
+	if picked, providerKey, ok := s.pickPreferredMixed(ctx, providers, model, &opts, tried, strategy); ok {
+		return picked, providerKey, nil
 	}
 	normalized := normalizeProviderKeys(providers)
 	if len(normalized) == 0 {
@@ -514,26 +497,6 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 
 	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
-	preferredAuthIDs := preferredAuthIDsFromMetadata(opts.Metadata)
-	if len(tried) == 0 && len(preferredAuthIDs) > 0 {
-		preferredPredicate := func(entry *scheduledAuth) bool {
-			if !predicate(entry) {
-				return false
-			}
-			_, ok := preferredAuthIDs[entry.auth.ID]
-			return ok
-		}
-		if picked, providerKey, ok := s.pickMixedReadyLocked(normalized, modelKey, strategy, preferredPredicate); ok {
-			return picked, providerKey, nil
-		}
-	}
-	if picked, providerKey, ok := s.pickMixedReadyLocked(normalized, modelKey, strategy, predicate); ok {
-		return picked, providerKey, nil
-	}
-	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
-}
-
-func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey string, strategy schedulerStrategy, predicate func(*scheduledAuth) bool) (*Auth, string, bool) {
 	candidateShards := make([]*modelScheduler, len(normalized))
 	bestPriority := 0
 	hasCandidate := false
@@ -558,7 +521,7 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 		}
 	}
 	if !hasCandidate {
-		return nil, "", false
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	if strategy == schedulerStrategyFillFirst {
@@ -569,10 +532,10 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 			}
 			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, strategy, predicate)
 			if picked != nil {
-				return picked, providerKey, true
+				return picked, providerKey, nil
 			}
 		}
-		return nil, "", false
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	cursorKey := strings.Join(normalized, ",") + ":" + modelKey
@@ -607,9 +570,9 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 		state.prepare(scheduledWeightVectorMatching(entries, predicate))
 		picked := pickSmoothWeightedScheduled(entries, state.current, predicate)
 		if picked != nil && picked.meta != nil {
-			return picked.auth, picked.meta.providerKey, true
+			return picked.auth, picked.meta.providerKey, nil
 		}
-		return nil, "", false
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	weights := make([]int, len(normalized))
@@ -625,7 +588,7 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 		segmentEnds[providerIndex] = totalWeight
 	}
 	if totalWeight == 0 {
-		return nil, "", false
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	startSlot := s.mixedCursors[cursorKey] % totalWeight
@@ -640,7 +603,7 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 		}
 	}
 	if startProviderIndex < 0 {
-		return nil, "", false
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	slot := startSlot
@@ -662,9 +625,9 @@ func (s *authScheduler) pickMixedReadyLocked(normalized []string, modelKey strin
 			continue
 		}
 		s.mixedCursors[cursorKey] = slot + 1
-		return picked, providerKey, true
+		return picked, providerKey, nil
 	}
-	return nil, "", false
+	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 }
 
 // mixedUnavailableErrorLocked synthesizes the mixed-provider cooldown or unavailable error.
@@ -883,7 +846,8 @@ func (s *authScheduler) upsertAuthRebuildLocked(auth *Auth, existingMetas map[st
 
 	providerState := s.ensureProviderLocked(providerKey)
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	meta := buildScheduledAuthMetaWithModelSet(authToSchedule, supportedModelSetForAuth(authToSchedule.ID), regEpoch, s.priorityResolver)
+	meta := buildScheduledAuthMetaWithModelSet(authToSchedule, supportedModelSetForAuth(authToSchedule.ID), regEpoch)
+	s.applyPriorityResolverLocked(meta)
 	s.authProviders[authID] = providerKey
 	providerState.upsertAuthForModelsLocked(meta, nil, true, now)
 }
@@ -919,9 +883,11 @@ func (s *authScheduler) upsertAuthLifecycleLocked(auth *Auth, now time.Time) {
 			previousState.removeAuthLocked(authID)
 		}
 	}
+
 	providerState := s.ensureProviderLocked(providerKey)
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	meta := buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(auth.ID), regEpoch, s.priorityResolver)
+	meta := buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(auth.ID), regEpoch)
+	s.applyPriorityResolverLocked(meta)
 	s.authProviders[authID] = providerKey
 	providerState.upsertAuthForModelsLocked(meta, nil, true, now)
 }
@@ -1003,7 +969,8 @@ func (s *authScheduler) upsertAuthResultLocked(auth *Auth, targetModels []string
 		modelSet = supportedModelSetForAuth(auth.ID)
 	}
 
-	meta := buildScheduledAuthMetaWithModelSet(auth, modelSet, currentRegEpoch, s.priorityResolver)
+	meta := buildScheduledAuthMetaWithModelSet(auth, modelSet, currentRegEpoch)
+	s.applyPriorityResolverLocked(meta)
 	s.authProviders[authID] = providerKey
 
 	// Check whether credential-level availability transitioned between blocked and unblocked.
@@ -1073,16 +1040,16 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 }
 
 // buildScheduledAuthMeta extracts the scheduling metadata needed for shard bookkeeping.
-func buildScheduledAuthMeta(auth *Auth, resolvers ...PriorityResolver) *scheduledAuthMeta {
+func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
 	var authID string
 	if auth != nil {
 		authID = auth.ID
 	}
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	return buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(authID), regEpoch, resolvers...)
+	return buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(authID), regEpoch)
 }
 
-func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}, regEpoch uint64, resolvers ...PriorityResolver) *scheduledAuthMeta {
+func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}, regEpoch uint64) *scheduledAuthMeta {
 	providerKey := executorKeyFromAuth(auth)
 	var clonedAuth *Auth
 	if auth != nil {
@@ -1091,7 +1058,7 @@ func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}
 	return &scheduledAuthMeta{
 		auth:              clonedAuth,
 		providerKey:       providerKey,
-		priority:          authPriority(auth, resolvers...),
+		priority:          authPriority(auth),
 		weight:            authWeight(auth),
 		websocketEnabled:  authWebsocketsEnabled(auth),
 		supportedModelSet: modelSet,

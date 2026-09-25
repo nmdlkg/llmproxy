@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -297,19 +296,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 
 func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
-	modelName = h.resolveAutoRoutedModel(ctx, entryProtocol, modelName, rawJSON)
-	if errFallback := forcedFallbackUnavailableError(ctx, modelName); errFallback != nil {
-		errChan := make(chan *interfaces.ErrorMessage, 1)
-		errChan <- errFallback
-		close(errChan)
-		return nil, nil, errChan
+	modelName, errFork := h.resolveForkModel(ctx, entryProtocol, modelName, rawJSON)
+	if errFork != nil {
+		return nil, nil, singleErrorChan(errFork)
 	}
 	routeDecision, preparedRoute := preparedModelRouteFromContext(ctx, execOptions.SkipRouterPluginID)
-	if autoroute.ForcedFallback(ctx) {
-		routeDecision = modelRouteDecision{}
-	} else if !preparedRoute {
+	if !preparedRoute {
 		routeDecision = h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, true, execOptions)
 	}
+	routeDecision = forcedFallbackRouteDecision(ctx, routeDecision)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)

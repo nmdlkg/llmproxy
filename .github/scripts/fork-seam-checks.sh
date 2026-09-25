@@ -19,7 +19,7 @@ run go test ./sdk/cliproxy/auth -run 'TestPluginSchedulerReceivesSharingMetadata
 run go test ./sdk/cliproxy/auth -run '^(TestSchedulerPriorityResolver|TestSchedulerPreferredAuthSingleProvider|TestManagerPreferredCoolingAuthRequestFallsThrough|TestSchedulerPreferredAuthMixedProvider|TestPreferredAuthIDsFromMetadata)$'
 
 # Seam 3: auto-routing before model-router dispatch.
-run go test ./sdk/api/handlers -run '^(TestResolveAutoRoutedModel|TestAutoRoutingExecutionEntryPointsPreserveOriginalRequestedModel)$'
+run go test ./sdk/api/handlers -run 'AutoRout|ForcedFallback|PreferredAuth'
 
 # Seam 4: tenant access-provider ordering and key extraction parity.
 run go test ./internal/access/...

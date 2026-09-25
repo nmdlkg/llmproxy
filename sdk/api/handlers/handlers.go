@@ -16,11 +16,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -229,9 +226,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}
-	if preferred := preferredAuthIDsFromContext(ctx); len(preferred) > 0 {
-		meta[coreauth.PreferredAuthIDsMetadataKey] = preferred
-	}
+	addPreferredAuthIDsMetadata(ctx, meta)
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
 	}
@@ -476,7 +471,7 @@ func (h *BaseAPIHandler) GetAlt(c *gin.Context) string {
 // Parameters:
 //   - handler: The API handler associated with the request.
 //   - c: The Gin context of the current request.
-//   - ctx: The parent context (caller values/deadlines are preserved; request context adds cancellation, request ID, and immutable tenant policy values).
+//   - ctx: The parent context (caller values/deadlines are preserved; request context adds cancellation and request ID).
 //
 // Returns:
 //   - context.Context: The new context with cancellation and embedded values.
@@ -499,14 +494,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
-	if requestCtx != nil {
-		if autoroute.ForcedFallback(requestCtx) {
-			parentCtx = autoroute.WithForcedFallback(parentCtx)
-		}
-		if user, ok := tenancy.UserFromContext(requestCtx); ok {
-			parentCtx = tenancy.WithUser(parentCtx, user)
-		}
-	}
+	parentCtx = withForkRequestValues(parentCtx, requestCtx)
 	newCtx, cancel := context.WithCancel(parentCtx)
 
 	endpoint := ""
@@ -537,11 +525,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			SessionID:        sessionID,
 			ParentSessionID:  parentSessionID,
 		})
-		// Classify the originating harness here rather than at route entry: most
-		// handlers build their executor context from context.Background(), so a
-		// value stored only on the gin request context would not reach the usage
-		// plugins.
-		newCtx = constant.WithHarness(newCtx, constant.ClassifyHarness(c.Request.UserAgent()))
+		newCtx = withForkClientAttribution(newCtx, c)
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
 	newCtx = logging.WithResponseHeadersHolder(newCtx)

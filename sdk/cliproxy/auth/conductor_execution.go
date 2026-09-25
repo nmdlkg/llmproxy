@@ -23,9 +23,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// PreferredAuthIDsMetadataKey carries auth IDs that should be tried softly on the first credential pick before normal priority selection.
-const PreferredAuthIDsMetadataKey = "preferred_auth_ids"
-
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
 	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
@@ -1694,49 +1691,6 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	default:
 		return ""
 	}
-}
-
-func preferredAuthIDsFromMetadata(meta map[string]any) map[string]struct{} {
-	if len(meta) == 0 {
-		return nil
-	}
-	raw, ok := meta[PreferredAuthIDsMetadataKey]
-	if !ok || raw == nil {
-		return nil
-	}
-	preferred := make(map[string]struct{})
-	add := func(value any) {
-		var authID string
-		switch val := value.(type) {
-		case string:
-			authID = strings.TrimSpace(val)
-		case []byte:
-			authID = strings.TrimSpace(string(val))
-		}
-		if authID != "" {
-			preferred[authID] = struct{}{}
-		}
-	}
-	switch val := raw.(type) {
-	case string, []byte:
-		add(val)
-	case []string:
-		for _, authID := range val {
-			add(authID)
-		}
-	case [][]byte:
-		for _, authID := range val {
-			add(authID)
-		}
-	case []any:
-		for _, authID := range val {
-			add(authID)
-		}
-	}
-	if len(preferred) == 0 {
-		return nil
-	}
-	return preferred
 }
 
 func disallowFreeAuthFromMetadata(meta map[string]any) bool {
