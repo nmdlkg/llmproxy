@@ -432,7 +432,6 @@ func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *c
 		// Atomically update capabilities on existing registered models if epoch matches
 		updated := GlobalModelRegistry().ApplyClientModelCapabilities(authClone.ID, expectedRegEpoch, func(modelID string, info *ModelInfo) {
 			upstreamID := resolveAntigravityUpstreamModelID(modelID, authClone.Prefix, aliasMap)
-			info.SupportsWebSearch = false
 			if _, ok := hints.WebSearchModelIDs[upstreamID]; ok {
 				info.SupportsWebSearch = true
 			}

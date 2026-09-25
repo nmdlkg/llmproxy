@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage/otelspec"
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
 )
@@ -493,18 +493,18 @@ func (cfg *Config) SanitizeOTelConfig() error {
 
 	switch interval, errParse := time.ParseDuration(o.ExportInterval); {
 	case o.ExportInterval == "", errParse != nil:
-		o.ExportInterval = otelusage.DefaultExportInterval.String()
+		o.ExportInterval = otelspec.DefaultExportInterval.String()
 	case interval <= 0:
 		return fmt.Errorf("otel.export-interval must be positive")
 	}
 	if o.ServiceName == "" {
-		o.ServiceName = otelusage.DefaultServiceName
+		o.ServiceName = otelspec.DefaultServiceName
 	}
 	if o.Enabled && o.Endpoint == "" {
 		return fmt.Errorf("otel.endpoint is required when otel.enabled is true")
 	}
 
-	resourceAttributes, errAttributes := otelusage.NormalizeResourceAttributes(o.ResourceAttributes)
+	resourceAttributes, errAttributes := otelspec.NormalizeResourceAttributes(o.ResourceAttributes)
 	if errAttributes != nil {
 		return fmt.Errorf("sanitize otel.resource-attributes: %w", errAttributes)
 	}
