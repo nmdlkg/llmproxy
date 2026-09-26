@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -46,5 +47,21 @@ func TestPluginSchedulerReceivesSharingMetadata(t *testing.T) {
 		if stored.Metadata["shared"] != false {
 			t.Fatal("plugin mutated stored sharing flag")
 		}
+	}
+}
+
+func TestSchedulerCandidateMetadataAccountIdentity(t *testing.T) {
+	first := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-1", "access_token": "secret-a"}})
+	duplicate := schedulerCandidateMetadata(&Auth{Provider: "Codex", Attributes: map[string]string{"account_id": "acct-1"}, Metadata: map[string]any{"access_token": "secret-b"}})
+	other := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-2"}})
+	identity, _ := first["account_identity"].(string)
+	if identity == "" || identity != duplicate["account_identity"] || identity == other["account_identity"] {
+		t.Fatalf("identities: first=%v duplicate=%v other=%v", first, duplicate, other)
+	}
+	if strings.Contains(identity, "acct-1") || len(first) != 1 {
+		t.Fatalf("identity must be opaque and the only exposed field: %v", first)
+	}
+	if tokenOnly := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"access_token": "secret"}}); tokenOnly != nil {
+		t.Fatalf("token-derived identity must not be exposed: %v", tokenOnly)
 	}
 }
