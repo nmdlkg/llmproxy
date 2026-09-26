@@ -97,15 +97,36 @@ func cliproxyPluginFree(ptr unsafe.Pointer, len C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() { sharedScheduler.shutdown() }
+
+type lifecycleRequest struct {
+	ConfigYAML []byte `json:"config_yaml"`
+}
 
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		var req lifecycleRequest
+		if len(request) > 0 {
+			if errDecode := json.Unmarshal(request, &req); errDecode != nil {
+				return nil, errDecode
+			}
+		}
+		cfg, errConfig := parsePluginConfig(req.ConfigYAML)
+		if errConfig != nil {
+			// Reject the registration so the host logs it and keeps its own
+			// fallback selection instead of running an unintended policy.
+			return nil, errConfig
+		}
+		sharedScheduler.configure(cfg)
 		return okEnvelope(map[string]any{
 			"schema_version": pluginabi.SchemaVersion,
-			"metadata":       pluginapi.Metadata{Name: "tenancy-scheduler", Version: "0.1.0"},
-			"capabilities":   map[string]bool{"scheduler": true},
+			"metadata":       pluginapi.Metadata{Name: "tenancy-scheduler", Version: "0.2.0"},
+			"capabilities": map[string]bool{
+				"scheduler":                   true,
+				"scheduler_across_priorities": cfg.AcrossPriorities && cfg.Mode != modeLegacy,
+				"usage_plugin":                cfg.Mode != modeLegacy,
+			},
 		})
 	case pluginabi.MethodSchedulerPick:
 		var req pluginapi.SchedulerPickRequest
@@ -113,6 +134,21 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			return nil, errDecode
 		}
 		return okEnvelope(sharedScheduler.pick(req))
+	case pluginabi.MethodUsageHandle:
+		var record pluginapi.UsageRecord
+		if errDecode := json.Unmarshal(request, &record); errDecode != nil {
+			return nil, errDecode
+		}
+		sharedScheduler.handleUsage(record)
+		return okEnvelope(struct{}{})
+	case pluginabi.MethodPluginQuiesce:
+		if errCheckpoint := sharedScheduler.checkpoint(); errCheckpoint != nil {
+			return nil, errCheckpoint
+		}
+		return okEnvelope(struct{}{})
+	case pluginabi.MethodPluginShutdown:
+		sharedScheduler.shutdown()
+		return okEnvelope(struct{}{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
