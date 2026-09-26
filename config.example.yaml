@@ -349,6 +349,9 @@ tenancy:
     urgency-horizon: "30m"
     high-water: 0.9
     urgency-bonus: 1
+    # Set to true when custom-plugins/tenancy-scheduler runs in optimizer mode,
+    # so the host bonus does not compete with the plugin policy. Restart required.
+    # disabled: false
 
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
