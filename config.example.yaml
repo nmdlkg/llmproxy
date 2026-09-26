@@ -553,6 +553,12 @@ codex:
   # than cooling down the entire credential across all sibling models.
   # Default: false
   model-level-cooling: false
+  # Cooldown (seconds) applied to a model on every Codex OAuth credential of the same plan tier
+  # (plan_type: plus/edu/team/...) when upstream answers
+  # "The '<model>' model is not supported when using Codex with a ChatGPT account.".
+  # New models usually reach the pro tier first, so each lower tier is re-probed once per period.
+  # 0 = default (86400 = 24h). Negative = disable tier-wide cooldown (per-credential 24h model-support fallback).
+  plan-model-unsupported-cooldown-seconds: 0
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:
