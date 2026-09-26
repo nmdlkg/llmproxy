@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -121,6 +122,10 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	if len(parsed.Meta) == 0 && oldData != nil && len(oldData.Meta) > 0 {
+		parsed.Meta = oldData.Meta
+	}
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -179,6 +184,7 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 			log.Warnf("models parse failed from %s: %v", url, err)
 			continue
 		}
+		applyForkModelOverlay(&parsed, url)
 		if err := validateModelsCatalog(&parsed); err != nil {
 			log.Warnf("models validate failed from %s: %v", url, err)
 			continue
@@ -190,8 +196,8 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 }
 
 // detectChangedProviders compares two model catalogs and returns provider names
-// whose model definitions differ. Codex tiers (free/team/plus/pro) are grouped
-// under a single "codex" provider.
+// whose model definitions differ. Gemini changes affect both Gemini protocols,
+// while Codex tiers (free/team/plus/pro) are grouped under one "codex" provider.
 func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	if oldData == nil || newData == nil {
 		return nil
@@ -206,6 +212,7 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	sections := []section{
 		{"claude", oldData.Claude, newData.Claude},
 		{"gemini", oldData.Gemini, newData.Gemini},
+		{"gemini-interactions", oldData.Gemini, newData.Gemini},
 		{"vertex", oldData.Vertex, newData.Vertex},
 		{"aistudio", oldData.AIStudio, newData.AIStudio},
 		{"codex", oldData.CodexFree, newData.CodexFree},
@@ -213,8 +220,13 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"codex", oldData.CodexPlus, newData.CodexPlus},
 		{"codex", oldData.CodexPro, newData.CodexPro},
 		{"kimi", oldData.Kimi, newData.Kimi},
+		{"kimi-ai", oldData.Kimi, newData.Kimi},
+		{"kimi.ai", oldData.Kimi, newData.Kimi},
+		{"kimi.com", oldData.Kimi, newData.Kimi},
 		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
+		{"devin", oldData.Devin, newData.Devin},
+		{"meta", oldData.Meta, newData.Meta},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -231,13 +243,19 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	return changed
 }
 
-// modelSectionChanged reports whether two model slices differ.
+// modelSectionChanged reports whether two model slices differ, including
+// internal metadata that is intentionally omitted from normal JSON responses.
 func modelSectionChanged(a, b []*ModelInfo) bool {
 	if len(a) != len(b) {
 		return true
 	}
 	if len(a) == 0 {
 		return false
+	}
+	for i := range a {
+		if a[i] != nil && b[i] != nil && !reflect.DeepEqual(a[i].NativeCapabilities, b[i].NativeCapabilities) {
+			return true
+		}
 	}
 	aj, err1 := json.Marshal(a)
 	bj, err2 := json.Marshal(b)
@@ -299,6 +317,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return fmt.Errorf("%s: decode models catalog: %w", source, err)
 	}
+	applyForkModelOverlay(&parsed, source)
 	if err := validateModelsCatalog(&parsed); err != nil {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
@@ -335,6 +354,7 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "kimi", models: data.Kimi},
 		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
+		{name: "meta", models: data.Meta},
 	}
 
 	for _, section := range requiredSections {

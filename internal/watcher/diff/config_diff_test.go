@@ -39,6 +39,7 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 	newCfg := &config.Config{
 		Port:    9090,
 		AuthDir: "/tmp/auth-new",
+		Codex:   config.CodexConfig{DisableCodexCloaking: true},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "old", BaseURL: "http://old", ExcludedModels: []string{"old-model", "extra"}},
 		},
@@ -78,6 +79,7 @@ func TestBuildConfigChangeDetails(t *testing.T) {
 	expectContains(t, details, "remote-management.allow-remote: false -> true")
 	expectContains(t, details, "remote-management.disable-auto-update-panel: false -> true")
 	expectContains(t, details, "remote-management.secret-key: updated")
+	expectContains(t, details, "codex.disable-codex-cloaking: false -> true")
 	expectContains(t, details, "oauth-excluded-models[providera]: updated (1 -> 2 entries)")
 	expectContains(t, details, "oauth-excluded-models[providerb]: added (1 entries)")
 	expectContains(t, details, "openai-compatibility:")
@@ -194,7 +196,36 @@ func TestBuildConfigChangeDetails_ModelPrefixes(t *testing.T) {
 	expectContains(t, changes, "vertex[0].prefix: old-v -> new-v")
 }
 
+func TestBuildConfigChangeDetails_CodexAlphaSearch(t *testing.T) {
+	oldCfg := &config.Config{CodexKey: []config.CodexKey{{APIKey: "key", BaseURL: "https://codex.example.com"}}}
+	newCfg := &config.Config{CodexKey: []config.CodexKey{{APIKey: "key", BaseURL: "https://codex.example.com", AlphaSearch: true}}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex[0].alpha-search: false -> true")
+}
+
+func TestBuildConfigChangeDetails_CodexKey_DisableCodexCloaking(t *testing.T) {
+	disabled := true
+	oldCfg := &config.Config{CodexKey: []config.CodexKey{{APIKey: "key", BaseURL: "https://codex.example.com"}}}
+	newCfg := &config.Config{CodexKey: []config.CodexKey{{APIKey: "key", BaseURL: "https://codex.example.com", DisableCodexCloaking: &disabled}}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex[0].disable-codex-cloaking: inherit -> true")
+}
+
+func TestBuildConfigChangeDetails_CodexOrphanDelegationCompatibility(t *testing.T) {
+	oldCfg := &config.Config{Codex: config.CodexConfig{OrphanDelegationCompatibility: false}}
+	newCfg := &config.Config{Codex: config.CodexConfig{OrphanDelegationCompatibility: true}}
+
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, changes, "codex.orphan-delegation-compatibility: false -> true")
+}
+
 func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
+	oldRetry := 1
+	newRetry := 0
+	oldDisableCooling := false
+	newDisableCooling := true
 	oldCfg := &config.Config{XAIKey: []config.XAIKey{{
 		APIKey:         "old-key",
 		Priority:       1,
@@ -202,7 +233,8 @@ func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
 		BaseURL:        "https://old.example.com/v1",
 		ProxyURL:       "http://old-proxy",
 		Websockets:     false,
-		DisableCooling: false,
+		DisableCooling: &oldDisableCooling,
+		RequestRetry:   &oldRetry,
 		Headers:        map[string]string{"X-Test": "old"},
 		Models:         []config.XAIModel{{Name: "grok-old", Alias: "grok"}},
 		ExcludedModels: []string{"grok-hidden"},
@@ -214,7 +246,8 @@ func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
 		BaseURL:        "https://new.example.com/v1",
 		ProxyURL:       "http://new-proxy",
 		Websockets:     true,
-		DisableCooling: true,
+		DisableCooling: &newDisableCooling,
+		RequestRetry:   &newRetry,
 		Headers:        map[string]string{"X-Test": "new"},
 		Models:         []config.XAIModel{{Name: "grok-new", Alias: "grok"}},
 		ExcludedModels: []string{"grok-other"},
@@ -227,6 +260,7 @@ func TestBuildConfigChangeDetails_XAIKeys(t *testing.T) {
 	expectContains(t, changes, "xai[0].priority: 1 -> 2")
 	expectContains(t, changes, "xai[0].websockets: false -> true")
 	expectContains(t, changes, "xai[0].disable-cooling: false -> true")
+	expectContains(t, changes, "xai[0].request-retry: 1 -> 0")
 	expectContains(t, changes, "xai[0].api-key: updated")
 	expectContains(t, changes, "xai[0].headers: updated")
 	expectContains(t, changes, "xai[0].models: updated (1 -> 1 entries)")
@@ -313,6 +347,8 @@ func TestBuildConfigChangeDetails_RedactsEndpointURLs(t *testing.T) {
 }
 
 func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
+	oldPoolEnabled := false
+	newPoolEnabled := true
 	oldCfg := &config.Config{
 		Port:                          1000,
 		AuthDir:                       "/old",
@@ -327,9 +363,16 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		MaxRetryInterval:              1,
 		WebsocketAuth:                 false,
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: false, SwitchPreviewModel: false, AntigravityCredits: false},
-		ClaudeKey:                     []config.ClaudeKey{{APIKey: "c1"}},
-		CodexKey:                      []config.CodexKey{{APIKey: "x1"}},
-		RemoteManagement:              config.RemoteManagement{DisableControlPanel: false, PanelGitHubRepository: "old/repo", SecretKey: "keep"},
+		Antigravity: config.AntigravityConfig{
+			SensitiveWords: []string{"old-word"},
+			ConnectionPool: config.AntigravityConnectionPoolConfig{
+				Enabled:         &oldPoolEnabled,
+				IdleConnTimeout: "30s",
+			},
+		},
+		ClaudeKey:        []config.ClaudeKey{{APIKey: "c1"}},
+		CodexKey:         []config.CodexKey{{APIKey: "x1"}},
+		RemoteManagement: config.RemoteManagement{DisableControlPanel: false, PanelGitHubRepository: "old/repo", SecretKey: "keep"},
 		SDKConfig: sdkconfig.SDKConfig{
 			RequestLog:                 false,
 			ProxyURL:                   "http://old-proxy",
@@ -352,6 +395,14 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		MaxRetryInterval:              3,
 		WebsocketAuth:                 true,
 		QuotaExceeded:                 config.QuotaExceeded{SwitchProject: true, SwitchPreviewModel: true, AntigravityCredits: true},
+		Antigravity: config.AntigravityConfig{
+			SensitiveWords: []string{"new-word-1", "new-word-2"},
+			ConnectionPool: config.AntigravityConnectionPoolConfig{
+				Enabled:         &newPoolEnabled,
+				IdleConnTimeout: "10s",
+			},
+		},
+		XAI: config.XAIConfig{InjectXSearch: true},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
 			{APIKey: "c2"},
@@ -373,6 +424,9 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
 			DisableImageGeneration:     config.DisableImageGenerationAll,
+			ClaudeCode: sdkconfig.ClaudeCodeConfig{
+				DisableCloakingModelList: true,
+			},
 		},
 	}
 
@@ -384,6 +438,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "save-cooldown-status: false -> true")
 	expectContains(t, details, "transient-error-cooldown-seconds: 0 -> -1")
 	expectContains(t, details, "disable-image-generation: false -> true")
+	expectContains(t, details, "claude-code.disable-cloaking-model-list: false -> true")
 	expectContains(t, details, "request-log: false -> true")
 	expectContains(t, details, "request-retry: 1 -> 2")
 	expectContains(t, details, "max-retry-credentials: 1 -> 3")
@@ -395,6 +450,10 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")
+	expectContains(t, details, "antigravity.sensitive-words: 1 -> 2")
+	expectContains(t, details, "antigravity.connection-pool.enabled: false -> true")
+	expectContains(t, details, `antigravity.connection-pool.idle-conn-timeout: "30s" -> "10s"`)
+	expectContains(t, details, "xai.inject-x-search: false -> true")
 	expectContains(t, details, "api-keys count: 1 -> 2")
 	expectContains(t, details, "claude-api-key count: 1 -> 2")
 	expectContains(t, details, "codex-api-key count: 1 -> 2")

@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
+	"github.com/tidwall/sjson"
+
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -14,8 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"golang.org/x/net/context"
 )
-
-var resolveAutoRoute = autoroute.Resolve
 
 // PluginModelRouterHost routes matching requests to a plugin executor, the router's own executor,
 // or a built-in provider before model-to-provider resolution and auth selection.
@@ -200,7 +200,22 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	}
 
 	if len(providers) == 0 {
-		return nil, "", &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("unknown provider for model %s", modelName)}
+		// The client asked for a model this proxy cannot route. Report it as a request
+		// error so streaming clients receive an actionable message instead of a
+		// gateway failure they would keep retrying. 400 is used rather than 404 to keep
+		// it distinguishable from an unregistered HTTP route.
+		// The model name is client supplied, so it is inserted through sjson rather
+		// than formatted into the JSON literal: an unescaped quote would otherwise
+		// corrupt the body or let the caller overwrite the error code.
+		body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+		body, errSet := sjson.Set(body, "error.message", "unknown provider for model "+modelName)
+		if errSet != nil {
+			body = `{"error":{"message":"unknown provider for model","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+		}
+		return nil, "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusBadRequest,
+			Error:      errors.New(body),
+		}
 	}
 
 	// The thinking suffix is preserved in the model name itself, so no
@@ -224,7 +239,7 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 
 func isOpenAIImageOnlyModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
-	case "gpt-image-1.5", "gpt-image-2", "grok-imagine-image", "grok-imagine-image-quality":
+	case "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0":
 		return true
 	default:
 		return false
@@ -307,46 +322,9 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 	return false
 }
 
-func (h *BaseAPIHandler) resolveAutoRoutedModel(ctx context.Context, entryProtocol, modelName string, rawJSON []byte) string {
-	if h == nil || h.Cfg == nil {
-		return modelName
-	}
-	if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
-		return modelName
-	}
-
-	suffix := thinking.ParseSuffix(modelName)
-	if autoroute.ForcedFallback(ctx) {
-		fallbackModel := strings.TrimSpace(h.Cfg.AutoRouting.FallbackModel)
-		if fallbackModel == "" {
-			return ""
-		}
-		if suffix.HasSuffix {
-			return fmt.Sprintf("%s(%s)", fallbackModel, suffix.RawSuffix)
-		}
-		return fallbackModel
-	}
-	if !h.Cfg.AutoRouting.Enabled {
-		return modelName
-	}
-	if suffix.ModelName != "auto" && !strings.HasPrefix(suffix.ModelName, "auto:") {
-		return modelName
-	}
-
-	prompt := autoroute.ExtractPrompt(entryProtocol, rawJSON, h.Cfg.AutoRouting.MaxPromptChars)
-	resolvedModel := resolveAutoRoute(ctx, h.Cfg.AutoRouting, h.Cfg, prompt)
-	if resolvedModel == "" {
-		return modelName
-	}
-	if suffix.HasSuffix {
-		return fmt.Sprintf("%s(%s)", resolvedModel, suffix.RawSuffix)
-	}
-	return resolvedModel
-}
-
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
-	if autoroute.ForcedFallback(ctx) {
+	if forcedQuotaFallback(ctx) {
 		return decision
 	}
 	host := h.modelRouterHost()

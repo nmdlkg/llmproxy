@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/autoroute"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -93,6 +91,20 @@ type handlerDirectExecutorRouteHost struct {
 	lastRequest  coreexecutor.Request
 	lastOptions  coreexecutor.Options
 	stream       func(context.Context, string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error)
+}
+
+type handlerSkipAwareDirectExecutorRouteHost struct {
+	handlerDirectExecutorRouteHost
+	routeSkip string
+}
+
+func (h *handlerSkipAwareDirectExecutorRouteHost) RouteModelExcept(ctx context.Context, req pluginapi.ModelRouteRequest, skipPluginID string) (pluginapi.ModelRouteResponse, bool) {
+	h.routeSkip = skipPluginID
+	return pluginapi.ModelRouteResponse{}, false
+}
+
+func (h *handlerSkipAwareDirectExecutorRouteHost) HasModelRoutersExcept(string) bool {
+	return h != nil && h.hasRouters
 }
 
 func (h *handlerDirectExecutorRouteHost) ExecutePluginExecutor(ctx context.Context, pluginID string, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
@@ -377,107 +389,6 @@ func TestApplyModelRouterSkipsHostsWithoutRouters(t *testing.T) {
 	}
 }
 
-func TestForcedFallbackSkipsEveryModelRouterTarget(t *testing.T) {
-	tests := []struct {
-		name     string
-		response pluginapi.ModelRouteResponse
-	}{
-		{
-			name: "provider only",
-			response: pluginapi.ModelRouteResponse{
-				Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "quota-fallback-test",
-			},
-		},
-		{
-			name: "explicit provider model",
-			response: pluginapi.ModelRouteResponse{
-				Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "quota-fallback-test", TargetModel: "quota-original",
-			},
-		},
-		{
-			name: "plugin executor",
-			response: pluginapi.ModelRouteResponse{
-				Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: "quota-plugin-executor",
-			},
-		},
-	}
-	for index, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			handler, executor := newForcedFallbackRouterTestHandler(t, fmt.Sprintf("forced-router-%d", index))
-			host := &handlerRouterOnlyTestHost{hasRouters: true}
-			host.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-				return test.response, true
-			}
-			handler.SetModelRouterHost(host)
-
-			ctx := autoroute.WithForcedFallback(context.Background())
-			_, _, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", "quota-original", []byte(`{"model":"quota-original"}`), "")
-			if errMsg != nil {
-				t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
-			}
-			if host.called {
-				t.Fatal("model router was called during forced quota fallback")
-			}
-			if executor.calls != 1 || executor.request.Model != "quota-fallback" {
-				t.Fatalf("executor calls/model = %d/%q, want 1/quota-fallback", executor.calls, executor.request.Model)
-			}
-		})
-	}
-}
-
-func TestForcedFallbackIgnoresPreparedStreamModelRoute(t *testing.T) {
-	handler, executor := newForcedFallbackRouterTestHandler(t, "forced-prepared-router")
-	host := &handlerRouterOnlyTestHost{hasRouters: true}
-	host.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
-		return pluginapi.ModelRouteResponse{
-			Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider,
-			Target: "quota-fallback-test", TargetModel: "quota-original",
-		}, true
-	}
-	handler.SetModelRouterHost(host)
-	body := []byte(`{"model":"quota-original","stream":true}`)
-	ctx, routed := handler.PrepareStreamModelRoute(context.Background(), "openai", "quota-original", body)
-	if !routed {
-		t.Fatal("PrepareStreamModelRoute() did not create the override fixture")
-	}
-	ctx = autoroute.WithForcedFallback(ctx)
-
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "quota-original", body, "")
-	for range dataChan {
-	}
-	if errMsg := <-errChan; errMsg != nil {
-		t.Fatalf("ExecuteStreamWithAuthManager() error = %+v", errMsg)
-	}
-	if executor.calls != 1 || executor.request.Model != "quota-fallback" {
-		t.Fatalf("executor calls/model = %d/%q, want 1/quota-fallback", executor.calls, executor.request.Model)
-	}
-}
-
-func newForcedFallbackRouterTestHandler(t *testing.T, authID string) (*BaseAPIHandler, *autoRouteCaptureExecutor) {
-	t.Helper()
-	executor := &autoRouteCaptureExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-	credential := &coreauth.Auth{
-		ID:       authID,
-		Provider: executor.Identifier(),
-		Status:   coreauth.StatusActive,
-	}
-	if _, errRegister := manager.Register(context.Background(), credential); errRegister != nil {
-		t.Fatalf("manager.Register() error = %v", errRegister)
-	}
-	registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{
-		{ID: "quota-original"},
-		{ID: "quota-fallback"},
-	})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(credential.ID)
-	})
-	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{AutoRouting: internalconfig.AutoRoutingConfig{
-		FallbackModel: "quota-fallback",
-	}}, manager), executor
-}
-
 // routeModelOnlyHost implements PluginModelRouterHost without HasModelRouters (conservative default).
 type routeModelOnlyHost struct {
 	called bool
@@ -599,6 +510,42 @@ func TestPrepareStreamModelRouteReusesDecisionDuringExecution(t *testing.T) {
 	}
 }
 
+func TestExecuteModelStreamDoesNotReusePreparedRouteWhenRouterPluginSkipped(t *testing.T) {
+	const originalModel = "prepared-router-model"
+	const mappedModel = "mapped-upstream-model"
+	const originPluginID = "origin-plugin"
+	host := &handlerSkipAwareDirectExecutorRouteHost{}
+	host.hasRouters = true
+	host.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetExecutor, Target: originPluginID}, true
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	handler.SetModelRouterHost(host)
+	body := []byte(`{"model":"prepared-router-model","stream":true}`)
+	ctx, routedToPlugin := handler.PrepareStreamModelRoute(context.Background(), "openai-response", originalModel, body)
+	if !routedToPlugin {
+		t.Fatal("PrepareStreamModelRoute() did not detect plugin executor route")
+	}
+
+	_, errMsg := handler.ExecuteModelStream(ctx, ModelExecutionRequest{
+		EntryProtocol:      "openai-response",
+		ExitProtocol:       "openai-response",
+		Model:              mappedModel,
+		Stream:             true,
+		Body:               []byte(`{"model":"mapped-upstream-model","stream":true}`),
+		SkipRouterPluginID: originPluginID,
+	})
+	if host.routeSkip != originPluginID {
+		t.Fatalf("router skip id = %q, want %q", host.routeSkip, originPluginID)
+	}
+	if host.lastPluginID == originPluginID {
+		t.Fatalf("plugin executor %q was re-entered despite SkipRouterPluginID", host.lastPluginID)
+	}
+	if errMsg == nil {
+		t.Fatal("ExecuteModelStream() error = nil, want normal provider resolution failure with empty auth manager")
+	}
+}
+
 func TestExecuteModelPropagatesRouterSkipPluginID(t *testing.T) {
 	model := "model-execution-router-skip-model"
 	requestBody := []byte(fmt.Sprintf(`{"model":%q}`, model))
@@ -691,6 +638,21 @@ func TestHandlerProvidersForExecutionRejectsImageOnlyModelOnProviderRoute(t *tes
 			name:          "target-model",
 			originalModel: "original-model",
 			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2"},
+		},
+		{
+			name:          "target-model-image-2.5",
+			originalModel: "original-model",
+			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2.5"},
+		},
+		{
+			name:          "target-model-image-2.5-flare",
+			originalModel: "original-model",
+			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2.5-flare"},
+		},
+		{
+			name:          "target-model-image-2.5-sunburst",
+			originalModel: "original-model",
+			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2.5-sunburst"},
 		},
 		{
 			name:          "target-model-thinking-suffix",

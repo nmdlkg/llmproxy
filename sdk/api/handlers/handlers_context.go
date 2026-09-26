@@ -4,14 +4,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/context"
 )
 
 type pinnedAuthContextKey struct{}
-
-type preferredAuthIDsContextKey struct{}
 
 type selectedAuthCallbackContextKey struct{}
 
@@ -20,6 +19,51 @@ type preparedModelRouteContextKey struct{}
 type executionSessionContextKey struct{}
 
 type disallowFreeAuthContextKey struct{}
+
+type nestedExecutionTrackerKey struct{}
+
+type nestedExecutionTracker struct {
+	mu     sync.Mutex
+	called bool
+}
+
+func (t *nestedExecutionTracker) mark() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.called = true
+	t.mu.Unlock()
+}
+
+func (t *nestedExecutionTracker) hasNestedExecution() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.called
+}
+
+func withNestedExecutionTracker(ctx context.Context) (context.Context, *nestedExecutionTracker) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if existing, ok := ctx.Value(nestedExecutionTrackerKey{}).(*nestedExecutionTracker); ok && existing != nil {
+		return ctx, existing
+	}
+	tracker := &nestedExecutionTracker{}
+	return context.WithValue(ctx, nestedExecutionTrackerKey{}, tracker), tracker
+}
+
+func markNestedExecution(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if tracker, ok := ctx.Value(nestedExecutionTrackerKey{}).(*nestedExecutionTracker); ok && tracker != nil {
+		tracker.mark()
+	}
+}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
 func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
@@ -31,18 +75,6 @@ func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, pinnedAuthContextKey{}, authID)
-}
-
-// WithPreferredAuthIDs returns a child context that softly prefers the supplied auth IDs.
-func WithPreferredAuthIDs(ctx context.Context, authIDs []string) context.Context {
-	authIDs = normalizePreferredAuthIDs(authIDs)
-	if len(authIDs) == 0 {
-		return ctx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, preferredAuthIDsContextKey{}, authIDs)
 }
 
 // WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
@@ -68,12 +100,33 @@ func (h *BaseAPIHandler) PrepareStreamModelRoute(ctx context.Context, handlerTyp
 	return ctx, hasOverride
 }
 
-func preparedModelRouteFromContext(ctx context.Context) (modelRouteDecision, bool) {
-	if ctx == nil {
+func preparedModelRouteFromContext(ctx context.Context, skipRouterPluginID string) (modelRouteDecision, bool) {
+	// A host.model.execute_stream callback is a nested execution. Its caller is
+	// excluded from model routing, so an outer prepared route cannot be reused:
+	// it may point straight back at that caller.
+	if ctx == nil || strings.TrimSpace(skipRouterPluginID) != "" {
 		return modelRouteDecision{}, false
 	}
 	decision, ok := ctx.Value(preparedModelRouteContextKey{}).(modelRouteDecision)
 	return decision, ok
+}
+
+// PreparedStreamPluginExecutor returns the executor plugin ID if the prepared route targets a plugin executor.
+func PreparedStreamPluginExecutor(ctx context.Context) string {
+	decision, ok := preparedModelRouteFromContext(ctx, "")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(decision.ExecutorPluginID)
+}
+
+// PreparedStreamProviderRoute returns the provider and target model if the prepared route targets a provider route override.
+func PreparedStreamProviderRoute(ctx context.Context) (string, string) {
+	decision, ok := preparedModelRouteFromContext(ctx, "")
+	if !ok {
+		return "", ""
+	}
+	return strings.TrimSpace(decision.Provider), strings.TrimSpace(decision.Model)
 }
 
 // WithExecutionSessionID returns a child context tagged with a long-lived execution session ID.
@@ -136,44 +189,6 @@ func pinnedAuthIDFromContext(ctx context.Context) string {
 	default:
 		return ""
 	}
-}
-
-func preferredAuthIDsFromContext(ctx context.Context) []string {
-	if ctx == nil {
-		return nil
-	}
-	raw := ctx.Value(preferredAuthIDsContextKey{})
-	switch value := raw.(type) {
-	case []string:
-		return normalizePreferredAuthIDs(value)
-	case string:
-		return normalizePreferredAuthIDs([]string{value})
-	case []byte:
-		return normalizePreferredAuthIDs([]string{string(value)})
-	case []any:
-		authIDs := make([]string, 0, len(value))
-		for _, item := range value {
-			switch typed := item.(type) {
-			case string:
-				authIDs = append(authIDs, typed)
-			case []byte:
-				authIDs = append(authIDs, string(typed))
-			}
-		}
-		return normalizePreferredAuthIDs(authIDs)
-	default:
-		return nil
-	}
-}
-
-func normalizePreferredAuthIDs(authIDs []string) []string {
-	normalized := make([]string, 0, len(authIDs))
-	for _, authID := range authIDs {
-		if authID = strings.TrimSpace(authID); authID != "" {
-			normalized = append(normalized, authID)
-		}
-	}
-	return normalized
 }
 
 func selectedAuthIDCallbackFromContext(ctx context.Context) func(string) {

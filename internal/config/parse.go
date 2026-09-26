@@ -16,6 +16,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config payload is empty")
 	}
 
+	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
+
 	var cfg Config
 	// Keep defaults aligned with LoadConfigOptional.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
@@ -31,17 +35,32 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.WebsocketAuth = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.Discovery.Enabled = false
+	cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
+	cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
-	cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
+	applyForkConfigDefaults(&cfg)
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
+	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
+		return nil, errValidate
+	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
+		return nil, errValidate
+	}
+	if cfg.Discovery.ServiceType == "" {
+		cfg.Discovery.ServiceType = DefaultDiscoveryServiceType
+	}
+	if len(cfg.Discovery.Subtypes) == 0 {
+		cfg.Discovery.Subtypes = []string{"_chat-completions", "_responses", "_messages", "_generate-content", "_interactions"}
 	}
 
 	// Hash remote management key if plaintext is detected (nested), but do NOT persist.
@@ -57,11 +76,6 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
-	cfg.Tenancy.UserPanel.GitHubRepository = strings.TrimSpace(cfg.Tenancy.UserPanel.GitHubRepository)
-	if cfg.Tenancy.UserPanel.GitHubRepository == "" {
-		cfg.Tenancy.UserPanel.GitHubRepository = DefaultUserPanelGitHubRepository
-	}
-	cfg.Tenancy.UserPanel.PinnedVersion = strings.TrimSpace(cfg.Tenancy.UserPanel.PinnedVersion)
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -98,19 +112,18 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeVertexCompatKeys()
 	cfg.SanitizeCodexKeys()
 	cfg.SanitizeXAIKeys()
+	cfg.SanitizeMetaKeys()
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
-	if errOTel := cfg.SanitizeOTelConfig(); errOTel != nil {
-		return nil, fmt.Errorf("invalid OpenTelemetry config: %w", errOTel)
-	}
+	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
-	cfg.SanitizeTenancyConfig()
-	cfg.SanitizeAutoRoutingConfig()
-	cfg.SanitizeOpenRouterConfig()
+	if errFork := normalizeForkConfig(&cfg); errFork != nil {
+		return nil, errFork
+	}
 
 	return &cfg, nil
 }

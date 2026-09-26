@@ -133,7 +133,7 @@ func (h *userTestHarness) writeCredential(t *testing.T, name, owner string, shar
 	if errMarshal != nil {
 		t.Fatalf("marshal credential: %v", errMarshal)
 	}
-	if errWrite := authfiles.WriteAuthFile(context.Background(), h.cfg, h.manager, name, raw); errWrite != nil {
+	if errWrite := authfiles.WriteAuthFile(context.Background(), h.cfg, h.manager, h.handler.persister, name, raw); errWrite != nil {
 		t.Fatalf("WriteAuthFile(%s) error = %v", name, errWrite)
 	}
 }

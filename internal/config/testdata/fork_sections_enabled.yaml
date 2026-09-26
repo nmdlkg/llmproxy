@@ -1,0 +1,73 @@
+# Exercises every fork-owned config section with values that need trimming,
+# lower-casing, defaulting, and dropping.
+port: 8317
+auth-dir: "/tmp/fork-config-golden-auths"
+otel:
+  enabled: true
+  endpoint: "  http://collector.example:4328  "
+  export-interval: "bogus"
+  service-name: ""
+  resource-attributes:
+    " team ": " platform "
+    "empty": ""
+openrouter:
+  enabled: true
+  base-url: " https://openrouter.example/api/v1/ "
+  refresh-interval: "-1h"
+  model-map:
+    " GPT-5.6-Sol ": " openai/gpt-5.6-sol "
+    "": "ignored"
+  cost-basis: " OpenRouter "
+  benchmark-source: "unknown-source"
+auto-routing:
+  enabled: true
+  router-url: " http://127.0.0.1:8080/ "
+  timeout-ms: 0
+  min-confidence: 3
+  cache-ttl-seconds: -5
+  max-prompt-chars: 0
+  default-tier: " Balanced "
+  fallback-model: " gpt-5.6-luna "
+  quota-fallback: true
+  tiers:
+    " Cheap ":
+      models: [" gpt-5.6-luna ", "GPT-5.6-LUNA", ""]
+    "empty":
+      models: [""]
+    Strong:
+      models: ["claude-opus-5", "gpt-5.6-sol"]
+  categories:
+    " Math ": " STRONG "
+    "": "cheap"
+tenancy:
+  enabled: true
+  user-panel:
+    github-repository: "   "
+    pinned-version: " 1.2.3 "
+  db-path: " /tmp/tenancy.db "
+  validation-interval: ""
+  quota:
+    enforce: true
+    window: ""
+    base-usd:
+      " Default ": 12.5
+      "negative": -1
+    contribution-usd:
+      " Codex ":
+        " Pro ": 40
+        "bad": -3
+      "empty":
+        "bad": -1
+    model-price-overrides:
+      " GPT-5.6-SOL ":
+        prompt: 1.25
+        completion: -2
+      "all-negative":
+        prompt: -1
+    provider-windows:
+      " Claude ": " 5h "
+      "": "1h"
+  balancing:
+    urgency-horizon: ""
+    high-water: 2
+    urgency-bonus: 0

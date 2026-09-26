@@ -330,7 +330,12 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	method := c.Request.Method
 
 	// Capture headers
-	headers := redactRequestLogHeaders(c.Request.Header)
+	var headers map[string][]string
+	if c.Request.Header != nil {
+		headers = redactRequestLogHeaders(c.Request.Header.Clone())
+	} else {
+		headers = make(map[string][]string)
+	}
 
 	// Capture request body
 	var body []byte

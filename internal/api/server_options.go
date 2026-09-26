@@ -27,8 +27,7 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
-	tenancyEnabled        bool
-	otelUsageEnabled      bool
+	fork                  forkOptionConfig
 }
 
 // ServerOption customises HTTP server construction.
@@ -46,11 +45,10 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 	if cfg == nil {
 		return nil
 	}
-	// UpdateClientsContext calls this conversion on reload. The notice is armed
-	// only after NewServer's startup conversion has completed.
-	noteOTelConfigReload()
 	sdkCfg := cfg.SDKConfig
 	sdkCfg.CodexOptimizeMultiAgentV2 = cfg.Codex.OptimizeMultiAgentV2
+	sdkCfg.CodexOrphanDelegationCompatibility = cfg.Codex.OrphanDelegationCompatibility
+	sdkCfg.CodexResponseSteering = cfg.Codex.ResponseSteering
 	if cfg.CommercialMode {
 		sdkCfg.RequestLog = false
 	}
@@ -137,26 +135,4 @@ func WithExampleAPIKeySafeMode() ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.exampleAPIKeySafeMode = true
 	}
-}
-
-// WithTenancyService enables tenancy lifecycle bootstrap from the server's
-// loaded configuration. A disabled tenancy config remains a no-op.
-func WithTenancyService() ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.tenancyEnabled = true
-	}
-}
-
-// WithOTelUsage enables startup-only OTLP/HTTP usage metrics bootstrap from
-// Config.OTel, with deprecated LLMPROXY_OTEL_* fallback when the section is absent.
-func WithOTelUsage() ServerOption {
-	return func(cfg *serverOptionConfig) {
-		cfg.otelUsageEnabled = true
-	}
-}
-
-// WithOTelUsageFromEnvironment is retained for callers migrating to WithOTelUsage.
-// Deprecated: use WithOTelUsage.
-func WithOTelUsageFromEnvironment() ServerOption {
-	return WithOTelUsage()
 }

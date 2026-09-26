@@ -1,0 +1,38 @@
+{
+  "tenancy": {
+    "enabled": false,
+    "validation-interval": "1h",
+    "quota": {
+      "enforce": false,
+      "window": "168h"
+    },
+    "balancing": {
+      "urgency-horizon": "30m",
+      "high-water": 0.9,
+      "urgency-bonus": 1
+    },
+    "user-panel": {
+      "github-repository": "https://github.com/nmdlkg/CLIProxyAPI-User-Panel",
+      "disable-auto-update": false,
+      "dev-mode": false
+    }
+  },
+  "tenancy-pricing": {
+    "enabled": false,
+    "base-url": "https://openrouter.ai/api/v1",
+    "refresh-interval": "6h",
+    "cost-basis": "static"
+  },
+  "auto-routing": {
+    "enabled": false,
+    "timeout-ms": 800,
+    "max-prompt-chars": 4000
+  },
+  "openrouter": {
+    "enabled": false,
+    "base-url": "https://openrouter.ai/api/v1",
+    "refresh-interval": "6h",
+    "cost-basis": "static"
+  },
+  "otel": null
+}

@@ -1,0 +1,94 @@
+{
+  "tenancy": {
+    "enabled": true,
+    "db-path": "/tmp/tenancy.db",
+    "validation-interval": "1h",
+    "quota": {
+      "enforce": true,
+      "window": "168h",
+      "base-usd": {
+        "default": 12.5
+      },
+      "contribution-usd": {
+        "codex": {
+          "pro": 40.0
+        }
+      },
+      "model-price-overrides": {
+        "gpt-5.6-sol": {
+          "prompt": 1.25
+        }
+      },
+      "provider-windows": {
+        "claude": "5h"
+      }
+    },
+    "balancing": {
+      "urgency-horizon": "30m",
+      "high-water": 0.9,
+      "urgency-bonus": 1
+    },
+    "user-panel": {
+      "github-repository": "https://github.com/nmdlkg/CLIProxyAPI-User-Panel",
+      "pinned-version": "1.2.3",
+      "disable-auto-update": false,
+      "dev-mode": false
+    }
+  },
+  "tenancy-pricing": {
+    "enabled": true,
+    "base-url": "https://openrouter.example/api/v1",
+    "refresh-interval": "6h",
+    "model-map": {
+      "gpt-5.6-sol": "openai/gpt-5.6-sol"
+    },
+    "cost-basis": "openrouter"
+  },
+  "auto-routing": {
+    "enabled": true,
+    "router-url": "http://127.0.0.1:8080",
+    "timeout-ms": 800,
+    "min-confidence": 0.5,
+    "cache-ttl-seconds": 300,
+    "max-prompt-chars": 4000,
+    "default-tier": "balanced",
+    "fallback-model": "gpt-5.6-luna",
+    "quota-fallback": true,
+    "tiers": {
+      "cheap": {
+        "models": [
+          "gpt-5.6-luna"
+        ]
+      },
+      "strong": {
+        "models": [
+          "claude-opus-5",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    "categories": {
+      "math": "strong"
+    }
+  },
+  "openrouter": {
+    "enabled": true,
+    "base-url": "https://openrouter.example/api/v1",
+    "refresh-interval": "6h",
+    "model-map": {
+      "gpt-5.6-sol": "openai/gpt-5.6-sol"
+    },
+    "cost-basis": "openrouter"
+  },
+  "otel": {
+    "enabled": true,
+    "endpoint": "http://collector.example:4328",
+    "export-interval": "15s",
+    "service-name": "llmproxy",
+    "service-version": "",
+    "environment": "",
+    "resource-attributes": {
+      "team": "platform"
+    }
+  }
+}

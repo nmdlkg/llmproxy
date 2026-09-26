@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage/otelspec"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
@@ -25,9 +26,10 @@ import (
 const (
 	// DefaultExportInterval keeps proxy metrics reasonably fresh without
 	// turning collector availability into a request-path concern.
-	DefaultExportInterval = 15 * time.Second
+	DefaultExportInterval = otelspec.DefaultExportInterval
 
-	DefaultServiceName = "llmproxy"
+	// DefaultServiceName is the OTel service.name used when none is configured.
+	DefaultServiceName = otelspec.DefaultServiceName
 
 	instrumentationName = "github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage"
 	exportWarnInterval  = time.Minute
@@ -318,36 +320,9 @@ func normalizeOptions(options Options) (Options, error) {
 // NormalizeResourceAttributes trims process-static resource attributes and
 // rejects names owned by the exporter or forbidden for security/cardinality.
 // Config sanitization uses this function so the reserved-name list stays here.
+// NormalizeResourceAttributes validates exporter resource attributes.
 func NormalizeResourceAttributes(attributes map[string]string) (map[string]string, error) {
-	if len(attributes) == 0 {
-		return nil, nil
-	}
-	resourceAttributes := make(map[string]string, len(attributes))
-	for key, value := range attributes {
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if key == "" || value == "" {
-			continue
-		}
-		if forbiddenAttributeName(key) {
-			return nil, fmt.Errorf("otel usage: resource attribute %q is forbidden", key)
-		}
-		resourceAttributes[key] = value
-	}
-	if len(resourceAttributes) == 0 {
-		return nil, nil
-	}
-	return resourceAttributes, nil
-}
-
-func forbiddenAttributeName(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "service.name", "service.version", "deployment.environment", "host.name",
-		"auth_id", "auth_index", "api_key", "request_id", "alias":
-		return true
-	default:
-		return false
-	}
+	return otelspec.NormalizeResourceAttributes(attributes)
 }
 
 func normalizedResourceValue(value, fallback string) string {

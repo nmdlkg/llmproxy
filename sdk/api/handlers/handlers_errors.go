@@ -8,26 +8,44 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"golang.org/x/net/context"
 )
 
 func statusFromError(err error) int {
-	if err == nil {
-		return 0
+	return clienterror.HTTPStatusFromError(err)
+}
+
+func isAuthSelectionUnavailable(err error) bool {
+	type modelCooldownMarker interface {
+		IsModelCooldown() bool
 	}
-	if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-		if code := se.StatusCode(); code > 0 {
-			return code
-		}
+	var mcm modelCooldownMarker
+	if errors.As(err, &mcm) && mcm != nil && mcm.IsModelCooldown() {
+		return false
 	}
-	return 0
+
+	var authErr *coreauth.Error
+	if !errors.As(err, &authErr) || authErr == nil {
+		return false
+	}
+	code := strings.TrimSpace(authErr.Code)
+	return code == "auth_not_found" || code == "auth_unavailable"
 }
 
 func (h *BaseAPIHandler) enrichAuthSelectionError(err error, providers []string, model string) error {
 	if err == nil {
 		return nil
+	}
+
+	type modelCooldownMarker interface {
+		IsModelCooldown() bool
+	}
+	var mcm modelCooldownMarker
+	if errors.As(err, &mcm) && mcm != nil && mcm.IsModelCooldown() {
+		return err
 	}
 
 	var authErr *coreauth.Error
@@ -53,14 +71,25 @@ func (h *BaseAPIHandler) enrichAuthSelectionError(err error, providers []string,
 	if baseMessage == "" {
 		baseMessage = "no auth available"
 	}
-	detail := fmt.Sprintf("%s (providers=%s, model=%s)", baseMessage, providerText, modelText)
 
-	// Selection errors only report that no credential was picked. Surface the
-	// upstream failure that caused every candidate to be skipped, so provider
+	cause := errors.Unwrap(err)
+	var upstreamSummary string
+	if cause != nil {
+		upstreamSummary = coreauth.ExtractUpstreamErrorSummary(cause.Error())
+	}
+	var detail string
+	if upstreamSummary != "" && !strings.Contains(baseMessage, upstreamSummary) {
+		detail = fmt.Sprintf("%s (providers=%s, model=%s; last upstream error: %s)", baseMessage, providerText, modelText, upstreamSummary)
+	} else {
+		detail = fmt.Sprintf("%s (providers=%s, model=%s)", baseMessage, providerText, modelText)
+	}
+
+	// When the error carries no upstream cause, fall back to the most recent
+	// upstream failure recorded on the candidate credentials, so provider
 	// messages such as "server_is_overloaded" are not lost.
-	if h != nil && h.AuthManager != nil {
+	if upstreamSummary == "" && h != nil && h.AuthManager != nil {
 		if upstream := h.AuthManager.LastUpstreamError(providers, model); upstream != nil {
-			if cause := strings.TrimSpace(upstream.Message); cause != "" && !strings.Contains(detail, cause) {
+			if cause := coreauth.ExtractUpstreamErrorSummary(strings.TrimSpace(upstream.Message)); cause != "" && !strings.Contains(detail, cause) {
 				if upstreamCode := strings.TrimSpace(upstream.Code); upstreamCode != "" && upstreamCode != code {
 					detail += fmt.Sprintf("; last upstream error: %s: %s", upstreamCode, cause)
 				} else {
@@ -80,12 +109,23 @@ func (h *BaseAPIHandler) enrichAuthSelectionError(err error, providers []string,
 		status = http.StatusServiceUnavailable
 	}
 
-	return &coreauth.Error{
+	enriched := &coreauth.Error{
 		Code:       authErr.Code,
 		Message:    detail,
 		Retryable:  authErr.Retryable,
 		HTTPStatus: status,
 	}
+	var carrier interface{ WithAuthError(*coreauth.Error) error }
+	if errors.As(err, &carrier) && carrier != nil {
+		return carrier.WithAuthError(enriched)
+	}
+	if coreauth.IsTerminalAuthError(err) {
+		return coreauth.NewTerminalAuthError(enriched, cause)
+	}
+	if cause != nil {
+		return coreauth.WithCause(enriched, cause)
+	}
+	return enriched
 }
 
 // WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.
@@ -93,6 +133,10 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	status := http.StatusInternalServerError
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode
+	}
+	if msg != nil && msg.DirectResponse {
+		writeDirectErrorResponse(c, status, msg)
+		return
 	}
 	if msg != nil && msg.Error != nil {
 		for _, value := range coreauth.SafeResponseHeaders(msg.Error).Values("Retry-After") {
@@ -118,7 +162,11 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 		}
 	}
 
-	body := BuildErrorResponseBody(status, errText)
+	var errCause error
+	if msg != nil {
+		errCause = msg.Error
+	}
+	body := BuildErrorResponseBodyWithError(status, errText, errCause)
 	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {
@@ -137,6 +185,25 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 
 	if !c.Writer.Written() {
+		c.Writer.Header().Set("Content-Type", "application/json")
+	}
+	c.Status(status)
+	_, _ = c.Writer.Write(body)
+}
+
+func writeDirectErrorResponse(c *gin.Context, status int, msg *interfaces.ErrorMessage) {
+	for key, values := range FilterUpstreamHeaders(msg.Headers) {
+		if len(values) == 0 || IsCPAReservedResponseHeader(key) {
+			continue
+		}
+		c.Writer.Header().Del(key)
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+	body := bytes.Clone(msg.Body)
+	appendAPIResponse(c, body)
+	if !c.Writer.Written() && c.Writer.Header().Get("Content-Type") == "" {
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Status(status)

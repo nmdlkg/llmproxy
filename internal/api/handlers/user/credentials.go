@@ -83,7 +83,7 @@ func (h *Handler) UploadCredential(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential JSON"})
 		return
 	}
-	if errWrite := authfiles.WriteAuthFile(c.Request.Context(), h.cfg, h.authManager, name, raw); errWrite != nil {
+	if errWrite := authfiles.WriteAuthFile(c.Request.Context(), h.cfg, h.authManager, h.persister, name, raw); errWrite != nil {
 		if errors.Is(errWrite, authfiles.ErrCredentialExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": authfiles.ErrCredentialExists.Error()})
 			return

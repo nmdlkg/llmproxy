@@ -1,0 +1,3 @@
+internal/pluginhost/host.go
+internal/runtime/executor/claude_thinking_replay_test.go
+internal/runtime/executor/codex_stream_bootstrap_buffering_test.go

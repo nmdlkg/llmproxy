@@ -19,7 +19,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	userHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/user"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -27,13 +26,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/userpanelasset"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"gopkg.in/yaml.v3"
@@ -49,6 +44,7 @@ type Server struct {
 	server *http.Server
 
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
+	listenerMu      sync.Mutex
 	muxBaseListener net.Listener
 
 	// muxHTTPListener receives HTTP connections selected by the multiplexer.
@@ -59,7 +55,8 @@ type Server struct {
 	codexLiveHandler *codexlive.Handler
 
 	// cfg holds the current server configuration.
-	cfg *config.Config
+	cfgMu sync.RWMutex
+	cfg   *config.Config
 
 	// oldConfigYaml stores a YAML snapshot of the previous configuration for change detection.
 	// This prevents issues when the config object is modified in place by Management API.
@@ -86,16 +83,12 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
-	user *userHandlers.Handler
 
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
-	// userPanelAsset and userPanelSupervisor are instance-owned. The supervisor
-	// performs background update work; request handlers only read the configured
-	// local development file or verified release cache.
-	userPanelAsset      *userpanelasset.Manager
-	userPanelSupervisor *userpanelasset.Supervisor
+	// fork owns fork-specific dependencies; see server_fork.go.
+	fork *forkRuntime
 
 	// managementRoutesRegistered tracks whether the management routes have been attached to the engine.
 	managementRoutesRegistered atomic.Bool
@@ -115,12 +108,6 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
-
-	tenancyService *tenancy.Service
-	tenancyInitErr error
-
-	otelUsageSink    *otelUsageSink
-	otelUsageInitErr error
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -147,6 +134,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	if errSetTrustedProxies := engine.SetTrustedProxies(cfg.TrustedProxies); errSetTrustedProxies != nil {
+		log.WithError(errSetTrustedProxies).Error("invalid trusted-proxies configuration; forwarded client IP headers will be ignored")
+		if errDisableTrustedProxies := engine.SetTrustedProxies(nil); errDisableTrustedProxies != nil {
+			log.WithError(errDisableTrustedProxies).Error("failed to disable trusted proxy handling")
+		}
+	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -185,13 +178,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	envAdminPassword = strings.TrimSpace(envAdminPassword)
 	envManagementSecret := envAdminPasswordSet && envAdminPassword != ""
 
-	// The panel is maintained in the separate CLIProxyAPI-User-Panel repository.
-	// The backend serves its configured local build or verified release cache;
-	// it no longer embeds a frontend copy that can drift from that repository.
-	panelAsset := userpanelasset.NewManager(configFilePath)
-	panelSupervisor := userpanelasset.NewSupervisor(panelAsset)
-	panelSupervisor.SetConfig(cfg)
-
 	// Create server instance
 	s := &Server{
 		engine:              engine,
@@ -205,45 +191,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
-		userPanelAsset:      panelAsset,
-		userPanelSupervisor: panelSupervisor,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
-	if optionState.tenancyEnabled {
-		tenancyService, errTenancy := tenancy.NewService(cfg.Tenancy, cfg.AuthDir, authManager)
-		if errTenancy != nil {
-			s.tenancyInitErr = errTenancy
-			log.WithError(errTenancy).Error("failed to initialize tenancy service")
-		} else {
-			s.tenancyService = tenancyService
-		}
-	}
-	if optionState.otelUsageEnabled {
-		otelOptions, usedEnvironmentFallback, errOptions := otelUsageOptions(cfg)
-		if usedEnvironmentFallback {
-			warnOTelEnvironmentFallback()
-		}
-		if errOptions != nil {
-			s.otelUsageInitErr = errOptions
-			log.WithError(errOptions).Error("failed to configure OpenTelemetry usage export")
-		} else {
-			otelSink, errOTelUsage := registerOTelUsage(
-				context.Background(),
-				otelOptions,
-				tenancyUsageEmailResolver(s.tenancyService),
-				coreusage.RegisterNamedPlugin,
-			)
-			if errOTelUsage != nil {
-				s.otelUsageInitErr = errOTelUsage
-				log.WithError(errOTelUsage).Error("failed to initialize OpenTelemetry usage export")
-			} else {
-				s.otelUsageSink = otelSink
-			}
-		}
-	}
+	s.fork = newForkRuntime(cfg, configFilePath, authManager, optionState.fork)
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
 		optionState.pluginHost.SetModelExecutor(s.handlers)
@@ -274,14 +227,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if optionState.postAuthPersistHook != nil {
 		s.mgmt.SetPostAuthPersistHook(optionState.postAuthPersistHook)
 	}
-	s.user = userHandlers.NewHandler(
-		cfg,
-		authManager,
-		s.tenancyService,
-		sdkAuth.GetTokenStore(),
-		s.mgmt,
-	)
-	s.user.SetUserPanelAsset(panelAsset)
+	s.fork.attachManagement(cfg, authManager, s.mgmt, optionState.postAuthHook)
 	s.localPassword = optionState.localPassword
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
@@ -317,11 +263,25 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: engine,
 	}
-	if optionState.otelUsageEnabled {
-		armOTelReloadNotice()
-	}
 
 	return s
+}
+
+func (s *Server) getConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
+}
+
+// Handler returns the HTTP handler used by the server.
+func (s *Server) Handler() http.Handler {
+	if s == nil || s.server == nil {
+		return nil
+	}
+	return s.server.Handler
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -333,11 +293,8 @@ func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
-	if s.tenancyInitErr != nil {
-		return fmt.Errorf("failed to start HTTP server: initialize tenancy: %w", s.tenancyInitErr)
-	}
-	if s.otelUsageInitErr != nil {
-		return fmt.Errorf("failed to start HTTP server: initialize OpenTelemetry usage export: %w", s.otelUsageInitErr)
+	if errFork := s.fork.startErr(); errFork != nil {
+		return fmt.Errorf("failed to start HTTP server: %w", errFork)
 	}
 
 	addr := s.server.Addr
@@ -346,10 +303,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
 
-	useTLS := s.cfg != nil && s.cfg.TLS.Enable
+	cfg := s.getConfig()
+	useTLS := cfg != nil && cfg.TLS.Enable
 	if useTLS {
-		certPath := strings.TrimSpace(s.cfg.TLS.Cert)
-		keyPath := strings.TrimSpace(s.cfg.TLS.Key)
+		certPath := strings.TrimSpace(cfg.TLS.Cert)
+		keyPath := strings.TrimSpace(cfg.TLS.Key)
 		if certPath == "" || keyPath == "" {
 			if errClose := listener.Close(); errClose != nil {
 				log.Errorf("failed to close listener after TLS validation failure: %v", errClose)
@@ -379,12 +337,11 @@ func (s *Server) Start() error {
 	}
 
 	httpListener := newMuxListener(listener.Addr(), 1024)
+	s.listenerMu.Lock()
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
-	if s.userPanelSupervisor != nil {
-		s.userPanelSupervisor.Start(context.Background())
-		defer s.userPanelSupervisor.Stop()
-	}
+	s.listenerMu.Unlock()
+	defer s.fork.start(context.Background())()
 
 	httpErrCh := make(chan error, 1)
 	acceptErrCh := make(chan error, 1)
@@ -398,13 +355,19 @@ func (s *Server) Start() error {
 
 	select {
 	case errServe := <-httpErrCh:
-		if s.muxBaseListener != nil {
-			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+		s.listenerMu.Lock()
+		muxBase := s.muxBaseListener
+		muxHTTP := s.muxHTTPListener
+		s.muxBaseListener = nil
+		s.muxHTTPListener = nil
+		s.listenerMu.Unlock()
+		if muxBase != nil {
+			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
 				log.Debugf("failed to close shared listener after HTTP serve exit: %v", errClose)
 			}
 		}
-		if s.muxHTTPListener != nil {
-			_ = s.muxHTTPListener.Close()
+		if muxHTTP != nil {
+			_ = muxHTTP.Close()
 		}
 		errAccept := <-acceptErrCh
 		errServe = normalizeHTTPServeError(errServe)
@@ -417,11 +380,17 @@ func (s *Server) Start() error {
 		}
 		return nil
 	case errAccept := <-acceptErrCh:
-		if s.muxHTTPListener != nil {
-			_ = s.muxHTTPListener.Close()
+		s.listenerMu.Lock()
+		muxHTTP := s.muxHTTPListener
+		muxBase := s.muxBaseListener
+		s.muxHTTPListener = nil
+		s.muxBaseListener = nil
+		s.listenerMu.Unlock()
+		if muxHTTP != nil {
+			_ = muxHTTP.Close()
 		}
-		if s.muxBaseListener != nil {
-			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+		if muxBase != nil {
+			if errClose := muxBase.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
 				log.Debugf("failed to close shared listener after accept loop exit: %v", errClose)
 			}
 		}
@@ -438,11 +407,10 @@ func (s *Server) Start() error {
 	}
 }
 
-// Stop gracefully shuts down the API server without interrupting any
-// active connections.
+// Stop closes listeners and immediately shuts down the API server without waiting for active connections.
 //
 // Parameters:
-//   - ctx: The context for graceful shutdown
+//   - ctx: Context passed for compatibility.
 //
 // Returns:
 //   - error: An error if the server fails to stop
@@ -455,42 +423,39 @@ func (s *Server) Stop(ctx context.Context) error {
 		default:
 		}
 	}
-	if s.userPanelSupervisor != nil {
-		s.userPanelSupervisor.Stop()
-	}
 
-	if s.muxHTTPListener != nil {
-		_ = s.muxHTTPListener.Close()
+	s.listenerMu.Lock()
+	muxHTTP := s.muxHTTPListener
+	s.muxHTTPListener = nil
+	muxBase := s.muxBaseListener
+	s.muxBaseListener = nil
+	s.listenerMu.Unlock()
+
+	if muxHTTP != nil {
+		_ = muxHTTP.Close()
 	}
-	if s.muxBaseListener != nil {
-		if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
-			log.Debugf("failed to close shared listener: %v", errClose)
+	if muxBase != nil {
+		if errCloseBase := muxBase.Close(); errCloseBase != nil && !errors.Is(errCloseBase, net.ErrClosed) {
+			log.Debugf("failed to close shared listener: %v", errCloseBase)
 		}
 	}
 
-	// Shutdown the HTTP server.
-	errShutdown := s.server.Shutdown(ctx)
+	// Close the HTTP server immediately without graceful draining.
+	var errCloseServer error
+	if s.server != nil {
+		errCloseServer = s.server.Close()
+		if errors.Is(errCloseServer, http.ErrServerClosed) || errors.Is(errCloseServer, net.ErrClosed) {
+			errCloseServer = nil
+		}
+	}
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
-	var stopErrors []error
-	if errShutdown != nil {
-		stopErrors = append(stopErrors, fmt.Errorf("failed to shutdown HTTP server: %w", errShutdown))
+	if errFork := s.fork.stop(ctx, errCloseServer); errFork != nil {
+		return errFork
 	}
-	if s.otelUsageSink != nil {
-		if otelPlugin := s.otelUsageSink.detach(); otelPlugin != nil {
-			if errShutdownOTel := otelPlugin.Shutdown(ctx); errShutdownOTel != nil {
-				stopErrors = append(stopErrors, errShutdownOTel)
-			}
-		}
-	}
-	if s.tenancyService != nil {
-		if errCloseTenancy := s.tenancyService.Close(); errCloseTenancy != nil {
-			stopErrors = append(stopErrors, errCloseTenancy)
-		}
-	}
-	if len(stopErrors) > 0 {
-		return errors.Join(stopErrors...)
+	if errCloseServer != nil {
+		return fmt.Errorf("failed to shutdown HTTP server: %v", errCloseServer)
 	}
 
 	log.Debug("API server stopped")

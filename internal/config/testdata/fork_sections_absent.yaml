@@ -1,0 +1,2 @@
+port: 8317
+auth-dir: "/tmp/fork-config-golden-auths"
