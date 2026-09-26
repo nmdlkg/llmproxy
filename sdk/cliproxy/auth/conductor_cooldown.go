@@ -760,6 +760,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	modelKey := canonicalModelKey(result.Model)
 
 	var authSnapshot *Auth
+	var planPeerSnapshots []*Auth
 	cooldownStateChanged := false
 	now := time.Now()
 
@@ -801,6 +802,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
 				}
+				planPeerSnapshots = m.clearCodexPlanModelCooldownLocked(ctx, auth, modelKey, now)
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
@@ -825,7 +827,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					}
 
 					statusCode := statusCodeFromResult(result.Error)
-					if isModelSupportResultError(result.Error) {
+					planPeriod, planCooldownEnabled := codexPlanModelUnsupportedCooldown()
+					if planCooldownEnabled && isCodexPlanModelUnsupportedError(auth.Provider, result.Error) {
+						// Plan-tier model rollout gap: cool this model on the whole tier.
+						if disableCooling {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							state.NextRetryAfter = now.Add(planPeriod)
+						}
+						planPeerSnapshots = m.applyCodexPlanModelCooldownLocked(ctx, auth, modelKey, result.Error, now)
+					} else if isModelSupportResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
 						} else if result.RetryAfter != nil && *result.RetryAfter > 0 {
@@ -997,10 +1008,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
-			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter)
+			cooldownStateChanged = !cooldownStateRecordsEqual(cooldownRecordsBefore, cooldownRecordsAfter) || len(planPeerSnapshots) > 0
 		}
 	}
 	m.mu.Unlock()
+	if m.scheduler != nil {
+		for _, peer := range planPeerSnapshots {
+			m.scheduler.upsertAuthResult(peer, []string{modelKey}, false)
+		}
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		var targetModels []string
 		if !result.CredentialScope && modelKey != "" {
@@ -1015,17 +1031,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.persistCooldownStates(context.Background())
 	}
 
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(result.AuthID)
-	reg := registry.GetGlobalRegistry()
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
-		}
-		projections = append(projections, m.clientModelProjectionForAuth(authSnapshot, sm.ID, now))
-	}
-	if authSnapshot != nil && len(projections) > 0 {
-		reg.ApplyClientModelProjections(result.AuthID, regEpoch, authSnapshot.Generation, projections)
+	m.applyAuthModelProjections(result.AuthID, authSnapshot, now)
+	for _, peer := range planPeerSnapshots {
+		m.applyAuthModelProjections(peer.ID, peer, now)
 	}
 
 	m.hook.OnResult(ctx, result)

@@ -215,6 +215,12 @@ type CodexConfig struct {
 	// ModelLevelCooling scopes Codex usage_limit_reached quota cooldowns to the requested model
 	// rather than cooling down the entire credential across all sibling models.
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
+	// PlanModelUnsupportedCooldownSeconds is the cooldown applied to a model on every Codex
+	// OAuth credential of the same plan tier (plan_type) when upstream rejects it with
+	// "model is not supported when using Codex with a ChatGPT account". 0 uses the default
+	// (86400 = 24h). Negative values disable tier-wide cooldown and keep the legacy
+	// per-credential model-support cooldown.
+	PlanModelUnsupportedCooldownSeconds int `yaml:"plan-model-unsupported-cooldown-seconds" json:"plan-model-unsupported-cooldown-seconds"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 	// ResponseSteering enables full-duplex Codex WebSockets, bound to one

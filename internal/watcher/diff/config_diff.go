@@ -49,6 +49,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.SaveCooldownStatus != newCfg.SaveCooldownStatus {
 		changes = append(changes, fmt.Sprintf("save-cooldown-status: %t -> %t", oldCfg.SaveCooldownStatus, newCfg.SaveCooldownStatus))
 	}
+	if oldCfg.Codex.PlanModelUnsupportedCooldownSeconds != newCfg.Codex.PlanModelUnsupportedCooldownSeconds {
+		changes = append(changes, fmt.Sprintf("codex.plan-model-unsupported-cooldown-seconds: %d -> %d", oldCfg.Codex.PlanModelUnsupportedCooldownSeconds, newCfg.Codex.PlanModelUnsupportedCooldownSeconds))
+	}
 	if oldCfg.TransientErrorCooldownSeconds != newCfg.TransientErrorCooldownSeconds {
 		changes = append(changes, fmt.Sprintf("transient-error-cooldown-seconds: %d -> %d", oldCfg.TransientErrorCooldownSeconds, newCfg.TransientErrorCooldownSeconds))
 	}
