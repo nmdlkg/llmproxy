@@ -731,6 +731,9 @@ func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {
 	if state.NextRetryAfter.IsZero() {
 		t.Fatalf("expected bad auth model state cooldown to be set")
 	}
+	if remaining := time.Until(state.NextRetryAfter); remaining < 23*time.Hour || remaining > 24*time.Hour {
+		t.Fatalf("model support cooldown = %v, want about 24h", remaining)
+	}
 }
 
 func TestManagerExecute_AntigravityInvalidGrantFallsBackAndSuspendsAuth(t *testing.T) {
@@ -2010,8 +2013,8 @@ func TestManager_ExecuteCount_ExplicitModelNotFoundSuspendsModel(t *testing.T) {
 		t.Fatalf("hook results = %#v, want preserved model_not_found code", results)
 	}
 	remaining := time.Until(state.NextRetryAfter)
-	if remaining < 11*time.Hour || remaining > 12*time.Hour {
-		t.Fatalf("model-not-found cooldown = %v, want about 12h", remaining)
+	if remaining < modelSupportRetryAfter-time.Hour || remaining > modelSupportRetryAfter {
+		t.Fatalf("model-not-found cooldown = %v, want about %v", remaining, modelSupportRetryAfter)
 	}
 	if count := reg.GetModelCount(model); count != 0 {
 		t.Fatalf("available model count = %d, want 0", count)

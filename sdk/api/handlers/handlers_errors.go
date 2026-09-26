@@ -35,7 +35,7 @@ func isAuthSelectionUnavailable(err error) bool {
 	return code == "auth_not_found" || code == "auth_unavailable"
 }
 
-func enrichAuthSelectionError(err error, providers []string, model string) error {
+func (h *BaseAPIHandler) enrichAuthSelectionError(err error, providers []string, model string) error {
 	if err == nil {
 		return nil
 	}
@@ -82,6 +82,21 @@ func enrichAuthSelectionError(err error, providers []string, model string) error
 		detail = fmt.Sprintf("%s (providers=%s, model=%s; last upstream error: %s)", baseMessage, providerText, modelText, upstreamSummary)
 	} else {
 		detail = fmt.Sprintf("%s (providers=%s, model=%s)", baseMessage, providerText, modelText)
+	}
+
+	// When the error carries no upstream cause, fall back to the most recent
+	// upstream failure recorded on the candidate credentials, so provider
+	// messages such as "server_is_overloaded" are not lost.
+	if upstreamSummary == "" && h != nil && h.AuthManager != nil {
+		if upstream := h.AuthManager.LastUpstreamError(providers, model); upstream != nil {
+			if cause := coreauth.ExtractUpstreamErrorSummary(strings.TrimSpace(upstream.Message)); cause != "" && !strings.Contains(detail, cause) {
+				if upstreamCode := strings.TrimSpace(upstream.Code); upstreamCode != "" && upstreamCode != code {
+					detail += fmt.Sprintf("; last upstream error: %s: %s", upstreamCode, cause)
+				} else {
+					detail += "; last upstream error: " + cause
+				}
+			}
+		}
 	}
 
 	// Clarify the most common alias confusion between Anthropic route names and internal provider keys.

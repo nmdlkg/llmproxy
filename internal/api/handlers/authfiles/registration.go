@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 var ErrCredentialExists = errors.New("This account is already registered. You cannot add it again. Please use a different account.")
@@ -51,9 +52,22 @@ func CheckUserRegistration(ctx context.Context, cfg *config.Config, manager *cor
 	}
 	if manager != nil {
 		for _, existing := range manager.List() {
-			if matches(existing) {
-				return ErrCredentialExists
+			if !matches(existing) {
+				continue
 			}
+			if stale, path := isStaleFileAuth(cfg, existing); stale {
+				// The backing file is gone, so this runtime record no longer
+				// represents a registered credential. Management listings already
+				// hide these, and counting them here rejects re-registration of an
+				// account the user can no longer see or delete.
+				log.WithFields(log.Fields{
+					"auth_id": existing.ID,
+					"path":    path,
+				}).Warn("registration check: ignoring runtime record without backing file")
+				continue
+			}
+			logDuplicateMatch(existing)
+			return ErrCredentialExists
 		}
 	}
 	if cfg == nil || strings.TrimSpace(cfg.AuthDir) == "" {
@@ -78,11 +92,58 @@ func CheckUserRegistration(ctx context.Context, cfg *config.Config, manager *cor
 			return fmt.Errorf("inspect registered credential: %w", errDecode)
 		}
 		provider, _ := metadata["type"].(string)
-		if matches(&coreauth.Auth{ID: ids.AuthIDForPath(path), FileName: entry.Name(), Provider: provider, Metadata: metadata}) {
+		candidate := &coreauth.Auth{ID: ids.AuthIDForPath(path), FileName: entry.Name(), Provider: provider, Metadata: metadata}
+		if matches(candidate) {
+			logDuplicateMatch(candidate)
 			return ErrCredentialExists
 		}
 		return nil
 	})
+}
+
+// isStaleFileAuth reports whether a file-backed runtime record lost its file.
+// Records that are not file-backed (config API keys, plugin virtual auths,
+// runtime-only entries) are left untouched.
+func isStaleFileAuth(cfg *config.Config, auth *coreauth.Auth) (bool, string) {
+	if auth == nil || coreauth.IsPluginVirtualAuth(auth) || coreauth.IsConfigAPIKeyAuth(auth) {
+		return false, ""
+	}
+	if auth.AuthSourceKind() != coreauth.AuthSourceFile {
+		return false, ""
+	}
+	path := AuthPath(auth)
+	if path == "" {
+		// Records synthesized without a path attribute are hidden by the
+		// management listing, so resolve the conventional location instead of
+		// treating them as registered.
+		fileName := strings.TrimSpace(auth.FileName)
+		if fileName == "" || cfg == nil || strings.TrimSpace(cfg.AuthDir) == "" {
+			return false, ""
+		}
+		if IsUnsafeAuthFileName(fileName) {
+			return false, ""
+		}
+		path = filepath.Join(cfg.AuthDir, fileName)
+	}
+	if _, errStat := os.Stat(path); os.IsNotExist(errStat) {
+		return true, path
+	}
+	return false, path
+}
+
+// logDuplicateMatch records which credential caused a rejection. The duplicate
+// error deliberately hides the other account, so operators need this to explain
+// a 409 that has no visible counterpart in the management UI.
+func logDuplicateMatch(existing *coreauth.Auth) {
+	if existing == nil {
+		return
+	}
+	log.WithFields(log.Fields{
+		"auth_id":  existing.ID,
+		"provider": existing.Provider,
+		"path":     AuthPath(existing),
+		"owner":    OwnerUserID(existing),
+	}).Warn("registration check: rejected duplicate credential")
 }
 
 // OAuthSaveError exposes an actionable duplicate warning without leaking other

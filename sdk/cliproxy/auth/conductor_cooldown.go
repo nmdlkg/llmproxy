@@ -27,6 +27,8 @@ var quotaCooldownDisabled atomic.Bool
 
 var transientErrorCooldownSeconds atomic.Int64
 
+const modelSupportRetryAfter = 24 * time.Hour
+
 // SetQuotaCooldownDisabled toggles auth/model cooldown scheduling globally.
 func SetQuotaCooldownDisabled(disable bool) {
 	quotaCooldownDisabled.Store(disable)
@@ -829,7 +831,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						} else if result.RetryAfter != nil && *result.RetryAfter > 0 {
 							state.NextRetryAfter = now.Add(*result.RetryAfter)
 						} else {
-							next := now.Add(12 * time.Hour)
+							next := now.Add(modelSupportRetryAfter)
 							state.NextRetryAfter = next
 						}
 					} else if isCloudflareChallengeResultError(result.Error) {

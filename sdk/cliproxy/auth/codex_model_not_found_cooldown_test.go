@@ -83,8 +83,8 @@ func TestCodexStructuredModelNotFound_ClassificationAndCooldown(t *testing.T) {
 				t.Fatalf("state.LastError = %#v, want code model_not_found", state.LastError)
 			}
 			remaining := time.Until(state.NextRetryAfter)
-			if remaining < 11*time.Hour || remaining > 13*time.Hour {
-				t.Fatalf("expected ~12h cooldown, got remaining=%v", remaining)
+			if remaining < modelSupportRetryAfter-time.Hour || remaining > modelSupportRetryAfter {
+				t.Fatalf("expected ~%v cooldown, got remaining=%v", modelSupportRetryAfter, remaining)
 			}
 		})
 	}
