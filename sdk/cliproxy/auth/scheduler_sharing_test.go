@@ -51,15 +51,25 @@ func TestPluginSchedulerReceivesSharingMetadata(t *testing.T) {
 }
 
 func TestSchedulerCandidateMetadataAccountIdentity(t *testing.T) {
-	first := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-1", "access_token": "secret-a"}})
-	duplicate := schedulerCandidateMetadata(&Auth{Provider: "Codex", Attributes: map[string]string{"account_id": "acct-1"}, Metadata: map[string]any{"access_token": "secret-b"}})
+	first := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-1", "email": "same@example.com", "access_token": "secret-a"}})
+	duplicate := schedulerCandidateMetadata(&Auth{Provider: "Codex", Attributes: map[string]string{"account_id": "acct-1", "email": "SAME@example.com"}, Metadata: map[string]any{"access_token": "secret-b"}})
 	other := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "acct-2"}})
+	seatA := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "workspace-1", "email": "alice@example.com"}})
+	seatB := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"account_id": "workspace-1", "email": "bob@example.com"}})
 	identity, _ := first["account_identity"].(string)
 	if identity == "" || identity != duplicate["account_identity"] || identity == other["account_identity"] {
 		t.Fatalf("identities: first=%v duplicate=%v other=%v", first, duplicate, other)
 	}
-	if strings.Contains(identity, "acct-1") || len(first) != 1 {
-		t.Fatalf("identity must be opaque and the only exposed field: %v", first)
+	if seatA["account_identity"] == seatB["account_identity"] {
+		t.Fatalf("different seats in one workspace must have different identities: seatA=%v seatB=%v", seatA, seatB)
+	}
+	for _, rawValue := range []string{"acct-1", "workspace-1", "alice@example.com", "bob@example.com"} {
+		if strings.Contains(identity, rawValue) || strings.Contains(seatA["account_identity"].(string), rawValue) || strings.Contains(seatB["account_identity"].(string), rawValue) {
+			t.Fatalf("identity must not contain raw value %q: first=%v seatA=%v seatB=%v", rawValue, first, seatA, seatB)
+		}
+	}
+	if len(first) != 1 || len(seatA) != 1 || len(seatB) != 1 {
+		t.Fatalf("identity must be the only exposed field: first=%v seatA=%v seatB=%v", first, seatA, seatB)
 	}
 	if tokenOnly := schedulerCandidateMetadata(&Auth{Provider: "codex", Metadata: map[string]any{"access_token": "secret"}}); tokenOnly != nil {
 		t.Fatalf("token-derived identity must not be exposed: %v", tokenOnly)

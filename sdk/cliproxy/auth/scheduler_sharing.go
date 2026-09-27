@@ -42,24 +42,43 @@ func schedulerCandidateMetadata(auth *Auth) map[string]any {
 	return out
 }
 
-// schedulerAccountIdentity derives a stable, non-reversible upstream account
-// identity so duplicate credential files of one account are not treated as
-// independent capacity. Only account identifiers are used, never tokens.
+// schedulerAccountIdentity derives a stable, opaque upstream account identity
+// so duplicate credential files of one account are not treated as independent
+// capacity. Only account identifiers are used, never tokens.
 func schedulerAccountIdentity(auth *Auth) string {
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	for _, field := range []string{"account_id", "email", "sub"} {
+	valueFor := func(field string) string {
 		value, _ := auth.Metadata[field].(string)
 		if strings.TrimSpace(value) == "" {
 			value = auth.Attributes[field]
 		}
 		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
 		if field == "email" {
 			value = strings.ToLower(value)
 		}
-		return fmt.Sprintf("%x", sha256.Sum256([]byte("scheduler-account\x00"+provider+"\x00"+field+"\x00"+value)))
+		return value
 	}
-	return ""
+
+	accountID := valueFor("account_id")
+	userField := "email"
+	userValue := valueFor(userField)
+	if userValue == "" {
+		userField = "sub"
+		userValue = valueFor(userField)
+	}
+
+	if accountID == "" && userValue == "" {
+		return ""
+	}
+
+	identityInput := "scheduler-account\x00" + provider + "\x00"
+	switch {
+	case accountID != "" && userValue != "":
+		identityInput += "account_id\x00" + accountID + "\x00" + userField + "\x00" + userValue
+	case accountID != "":
+		identityInput += "account_id\x00" + accountID
+	default:
+		identityInput += userField + "\x00" + userValue
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identityInput)))
 }
