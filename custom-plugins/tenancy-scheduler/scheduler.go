@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"sort"
 	"strings"
@@ -19,10 +20,13 @@ var sharedScheduler scheduler
 type scheduler struct {
 	cursor atomic.Uint64
 
-	mu     sync.RWMutex
-	cfg    pluginConfig
-	engine *optimizer.Engine
-	worker *optimizer.Worker
+	lifecycleMu sync.Mutex
+	saveMu      sync.Mutex
+	mu          sync.RWMutex
+	cfg         pluginConfig
+	engine      *optimizer.Engine
+	worker      *optimizer.Worker
+	saveEnabled bool
 }
 
 func shareable(candidate pluginapi.SchedulerAuthCandidate) bool {
@@ -133,18 +137,22 @@ func (s *scheduler) handleUsage(record pluginapi.UsageRecord) {
 	if engine == nil {
 		return
 	}
-	completedAt := record.RequestedAt
-	if !completedAt.IsZero() {
-		completedAt = completedAt.Add(record.Latency)
+	observedAt := record.RequestedAt
+	if !observedAt.IsZero() && record.TTFT > 0 {
+		observedAt = observedAt.Add(record.TTFT)
+	}
+	model := record.Alias
+	if model == "" {
+		model = record.Model
 	}
 	engine.RecordUsage(optimizer.Usage{
 		AuthID:      record.AuthID,
 		Provider:    record.Provider,
-		Model:       record.Model,
+		Model:       model,
 		Generate:    record.Generate,
 		Failed:      record.Failed,
 		Latency:     record.Latency,
-		CompletedAt: completedAt,
+		CompletedAt: observedAt,
 		Tokens: optimizer.EffectiveTokens(record.Detail.InputTokens, record.Detail.OutputTokens,
 			record.Detail.ReasoningTokens, record.Detail.CachedTokens, record.Detail.TotalTokens),
 		Headers: record.ResponseHeaders,
@@ -154,65 +162,120 @@ func (s *scheduler) handleUsage(record pluginapi.UsageRecord) {
 // configure applies a (re)registration. The engine keeps its learned state
 // across reconfiguration unless its settings change; legacy mode stops it.
 func (s *scheduler) configure(cfg pluginConfig) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	previous := s.cfg
-	s.cfg = cfg
-	if cfg.Mode == modeLegacy {
-		s.stopLocked(previous)
-		return
-	}
-	if s.engine != nil && previous.Optimizer == cfg.Optimizer && previous.StatePath == cfg.StatePath &&
+	if cfg.Mode != modeLegacy && s.engine != nil && s.worker != nil && s.saveEnabled &&
+		previous.Optimizer == cfg.Optimizer && previous.StatePath == cfg.StatePath &&
 		previous.RecomputeEvery == cfg.RecomputeEvery && previous.CheckpointEvery == cfg.CheckpointEvery {
+		s.cfg = cfg
+		s.mu.Unlock()
 		return
 	}
-	s.stopLocked(previous)
-	engine := optimizer.NewEngine(cfg.Optimizer, nil)
-	if errLoad := engine.Load(cfg.StatePath); errLoad != nil {
-		// Keep the unreadable file for inspection and start from an empty belief.
-		quarantineState(cfg.StatePath)
-		engine = optimizer.NewEngine(cfg.Optimizer, nil)
+	s.mu.Unlock()
+
+	engine, worker, save := s.detach()
+	worker.Stop()
+	if engine != nil && save {
+		_ = engine.Save(previous.StatePath, previous.Mode)
 	}
+	if cfg.Mode == modeLegacy {
+		s.mu.Lock()
+		s.cfg = cfg
+		s.mu.Unlock()
+		return
+	}
+
+	engine = optimizer.NewEngine(cfg.Optimizer, nil)
+	save = true
+	if errLoad := engine.Load(cfg.StatePath); errLoad != nil {
+		// Preserve inaccessible state; only invalid content may be quarantined.
+		save = errors.Is(errLoad, optimizer.ErrCorruptState) && quarantineState(cfg.StatePath) == nil
+	}
+	s.mu.Lock()
+	s.cfg = cfg
 	s.engine = engine
-	statePath, mode := cfg.StatePath, cfg.Mode
+	s.saveEnabled = save
 	s.worker = optimizer.StartWorker(engine, cfg.RecomputeEvery, cfg.CheckpointEvery, func() {
-		_ = engine.Save(statePath, mode)
+		_ = s.checkpointEngine(engine)
 	})
+	s.mu.Unlock()
 }
 
-func quarantineState(path string) {
+func quarantineState(path string) error {
 	if path == "" {
-		return
+		return nil
 	}
-	_ = os.Rename(path, path+".corrupt-"+time.Now().UTC().Format("20060102T150405Z"))
+	return os.Rename(path, path+".corrupt-"+time.Now().UTC().Format("20060102T150405Z"))
 }
 
 // checkpoint flushes optimizer state without stopping it.
 func (s *scheduler) checkpoint() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.checkpointEngine(nil)
+}
+
+func (s *scheduler) checkpointEngine(expected *optimizer.Engine) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.RLock()
-	engine, path, mode := s.engine, s.cfg.StatePath, s.cfg.Mode
+	engine, path, mode, enabled := s.engine, s.cfg.StatePath, s.cfg.Mode, s.saveEnabled
 	s.mu.RUnlock()
-	if engine == nil {
+	if engine == nil || !enabled || (expected != nil && engine != expected) {
 		return nil
 	}
 	return engine.Save(path, mode)
 }
 
-func (s *scheduler) shutdown() {
+// quiesce makes the current instance stop writing its state file before a
+// replacement instance can load it.
+func (s *scheduler) quiesce() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.saveMu.Lock()
+	s.mu.RLock()
+	engine, path, mode, enabled := s.engine, s.cfg.StatePath, s.cfg.Mode, s.saveEnabled
+	s.mu.RUnlock()
+	if engine != nil && enabled {
+		if errSave := engine.Save(path, mode); errSave != nil {
+			s.saveMu.Unlock()
+			return errSave
+		}
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stopLocked(s.cfg)
+	s.saveEnabled = false
+	worker := s.worker
+	s.worker = nil
+	s.mu.Unlock()
+	s.saveMu.Unlock()
+	worker.Stop()
+	return nil
 }
 
-// stopLocked stops background work and checkpoints with the settings the
-// engine was started with.
-func (s *scheduler) stopLocked(cfg pluginConfig) {
-	if s.worker != nil {
-		s.worker.Stop()
-		s.worker = nil
+func (s *scheduler) shutdown() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	engine, worker, save := s.detach()
+	worker.Stop()
+	if engine != nil && save {
+		_ = engine.Save(cfg.StatePath, cfg.Mode)
 	}
-	if s.engine != nil {
-		_ = s.engine.Save(cfg.StatePath, cfg.Mode)
-		s.engine = nil
-	}
+}
+
+// detach waits for any in-flight checkpoint, then removes the active engine
+// without holding the pick lock during worker shutdown or disk I/O.
+func (s *scheduler) detach() (*optimizer.Engine, *optimizer.Worker, bool) {
+	s.saveMu.Lock()
+	s.mu.Lock()
+	engine, worker, save := s.engine, s.worker, s.saveEnabled
+	s.engine, s.worker, s.saveEnabled = nil, nil, false
+	s.mu.Unlock()
+	s.saveMu.Unlock()
+	return engine, worker, save
 }

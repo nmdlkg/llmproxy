@@ -44,6 +44,14 @@ optimizer:
 	}
 }
 
+func TestParsePluginConfigRejectsNonFiniteOptimizerValues(t *testing.T) {
+	for _, value := range []string{".nan", ".inf", "-.inf"} {
+		if _, errParse := parsePluginConfig([]byte("optimizer:\n  epsilon: " + value + "\n")); errParse == nil {
+			t.Fatalf("epsilon %q must be rejected", value)
+		}
+	}
+}
+
 func registerWith(t *testing.T, yaml string) (map[string]bool, error) {
 	t.Helper()
 	request, _ := json.Marshal(map[string]any{"config_yaml": base64.StdEncoding.EncodeToString([]byte(yaml)), "schema_version": pluginabi.SchemaVersion})
@@ -166,6 +174,53 @@ func TestShadowModeExecutesLegacyAndCheckpointsWithoutSecrets(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(raw)), secret) {
 			t.Fatalf("state file leaks %q", secret)
 		}
+	}
+}
+
+func TestUsageUsesAliasAndResponseStartObservationTime(t *testing.T) {
+	s := newModeScheduler(t, modeOptimizer, false)
+	requestedAt := time.Date(2026, 9, 27, 3, 4, 5, 0, time.UTC)
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "10")
+	headers.Set("x-codex-primary-window-minutes", "300")
+	headers.Set("x-codex-primary-reset-after-seconds", "7200")
+	s.handleUsage(pluginapi.UsageRecord{
+		AuthID:          "alias-auth",
+		Provider:        "codex",
+		Model:           "upstream-model",
+		Alias:           "route-alias",
+		Generate:        true,
+		RequestedAt:     requestedAt,
+		TTFT:            3 * time.Second,
+		Latency:         45 * time.Minute,
+		Detail:          pluginapi.UsageDetail{TotalTokens: 100},
+		ResponseHeaders: headers,
+	})
+	if errCheckpoint := s.checkpoint(); errCheckpoint != nil {
+		t.Fatal(errCheckpoint)
+	}
+	raw, errRead := os.ReadFile(s.cfg.StatePath)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var state struct {
+		Classes map[string]json.RawMessage `json:"classes"`
+		Windows []struct {
+			ObservedAt time.Time `json:"observed_at"`
+		} `json:"windows"`
+	}
+	if errDecode := json.Unmarshal(raw, &state); errDecode != nil {
+		t.Fatal(errDecode)
+	}
+	if _, ok := state.Classes["codex/route-alias"]; !ok {
+		t.Fatalf("classes = %v, want route alias", state.Classes)
+	}
+	if _, ok := state.Classes["codex/upstream-model"]; ok {
+		t.Fatalf("classes = %v, upstream model must not replace route alias", state.Classes)
+	}
+	wantObservedAt := requestedAt.Add(3 * time.Second)
+	if len(state.Windows) != 1 || !state.Windows[0].ObservedAt.Equal(wantObservedAt) {
+		t.Fatalf("observed_at = %v, want %v", state.Windows, wantObservedAt)
 	}
 }
 

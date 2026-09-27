@@ -67,11 +67,17 @@ func cliproxy_plugin_init(_ *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api)
 }
 
 //export cliproxyPluginCall
-func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
+func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) (status C.int) {
 	if response != nil {
 		response.ptr = nil
 		response.len = 0
 	}
+	defer func() {
+		if recover() != nil {
+			writeResponse(response, errorEnvelope("plugin_panic", "plugin call failed"))
+			status = 1
+		}
+	}()
 	if method == nil {
 		writeResponse(response, errorEnvelope("invalid_method", "method is required"))
 		return 1
@@ -97,7 +103,12 @@ func cliproxyPluginFree(ptr unsafe.Pointer, len C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() { sharedScheduler.shutdown() }
+func cliproxyPluginShutdown() {
+	defer func() {
+		_ = recover()
+	}()
+	sharedScheduler.shutdown()
+}
 
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
@@ -142,7 +153,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		sharedScheduler.handleUsage(record)
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodPluginQuiesce:
-		if errCheckpoint := sharedScheduler.checkpoint(); errCheckpoint != nil {
+		if errCheckpoint := sharedScheduler.quiesce(); errCheckpoint != nil {
 			return nil, errCheckpoint
 		}
 		return okEnvelope(struct{}{})

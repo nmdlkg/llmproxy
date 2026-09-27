@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -75,6 +76,26 @@ func Defaults() Config {
 
 // Normalize fills zero values with defaults and validates ranges.
 func (c Config) Normalize() (Config, error) {
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{"epsilon", c.Epsilon},
+		{"request-value", c.RequestValue},
+		{"lambda-latency", c.LambdaLatency},
+		{"lambda-failure", c.LambdaFailure},
+		{"perturb-requests", c.PerturbRequests},
+		{"prior-requests-per-window", c.PriorRequestsPerWindow},
+		{"demand-cv", c.DemandCV},
+		{"consumption-cv", c.ConsumptionCV},
+		{"drift-per-hour", c.DriftPerHour},
+		{"terminal-value", c.TerminalValue},
+		{"max-work", c.MaxWork},
+	} {
+		if math.IsNaN(field.value) || math.IsInf(field.value, 0) {
+			return c, fmt.Errorf("%s must be finite", field.name)
+		}
+	}
 	d := Defaults()
 	if c.Epsilon == 0 {
 		c.Epsilon = d.Epsilon
