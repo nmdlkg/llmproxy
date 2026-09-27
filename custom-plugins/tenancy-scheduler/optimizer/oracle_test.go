@@ -157,28 +157,33 @@ func (o oracleInstance) roundRobinServed() int {
 }
 
 func BenchmarkEnginePick(b *testing.B) {
-	cfg, _ := Defaults().Normalize()
-	clock := &fakeClock{t: testEpoch}
-	engine := NewEngine(cfg, clock.now)
-	var candidates []Candidate
-	for i := 0; i < 32; i++ {
-		id := fmt.Sprintf("auth-%02d", i)
-		candidates = append(candidates, Candidate{ID: id, Provider: "codex", Account: "acct-" + id})
-	}
-	engine.Pick("gpt-5", candidates, "")
-	for i, candidate := range candidates {
-		engine.RecordUsage(Usage{AuthID: candidate.ID, Provider: "codex", Model: "gpt-5", Generate: true, Tokens: 1000, CompletedAt: clock.now(),
-			Headers: codexHeaders(float64(i), testEpoch.Add(time.Duration(i)*10*time.Minute), float64(i), testEpoch.Add(48*time.Hour))})
-	}
-	engine.Recompute()
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		engine.Pick("gpt-5", candidates, "")
-		if i%64 == 0 {
-			engine.mu.Lock()
-			engine.reservations = map[string][]reservationGroup{}
-			engine.mu.Unlock()
-		}
+	for _, count := range []int{32, 200, 500} {
+		b.Run(fmt.Sprintf("candidates-%d", count), func(b *testing.B) {
+			cfg, _ := Defaults().Normalize()
+			clock := &fakeClock{t: testEpoch}
+			engine := NewEngine(cfg, clock.now)
+			candidates := make([]Candidate, 0, count)
+			for i := 0; i < count; i++ {
+				id := fmt.Sprintf("auth-%03d", i)
+				candidates = append(candidates, Candidate{ID: id, Provider: "codex", Account: "acct-" + id})
+			}
+			engine.Pick("gpt-5", candidates, "")
+			for i, candidate := range candidates {
+				engine.RecordUsage(Usage{AuthID: candidate.ID, Provider: "codex", Model: "gpt-5", Generate: true, Tokens: 1000, CompletedAt: clock.now(),
+					Headers: codexHeaders(float64(i), testEpoch.Add(time.Duration(i)*10*time.Minute), float64(i), testEpoch.Add(48*time.Hour))})
+			}
+			engine.Recompute()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				engine.Pick("gpt-5", candidates, "")
+				if i%64 == 0 {
+					engine.mu.Lock()
+					engine.reservations = map[string][]reservationGroup{}
+					engine.reserved = map[string]float64{}
+					engine.mu.Unlock()
+				}
+			}
+		})
 	}
 }

@@ -290,11 +290,16 @@ func bindingReset(states []simWindowState, c int) float64 {
 
 func requestCapacity(states []simWindowState, c int) float64 {
 	capacity := math.Inf(1)
+	applicable := false
 	for _, state := range states {
 		if c >= len(state.perReq) || state.perReq[c] <= 0 {
 			continue
 		}
+		applicable = true
 		capacity = math.Min(capacity, math.Max(0, state.remaining)/state.perReq[c])
+	}
+	if !applicable {
+		return math.Inf(1)
 	}
 	if math.IsInf(capacity, 1) {
 		return 0

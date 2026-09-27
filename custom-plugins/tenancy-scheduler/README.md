@@ -68,7 +68,18 @@ length (`5h`, `7d`), not the primary/secondary slot. A reset time that moves by
 more than 90 s starts a new window instance (`Generation`). Percent windows use
 native basis points (10000 = 100%); the reporting granularity is kept as
 rounding uncertainty. Retry-After is ignored because host cooldowns are
-authoritative.
+authoritative. The observation time is `RequestedAt + TTFT` (headers arrive at
+response start), so a long stream cannot overwrite a newer snapshot. Demand
+classes use the requested alias (`UsageRecord.Alias`, falling back to `Model`)
+so they match the model seen at pick time.
+
+Account-wide windows (`default`, `tokens`, `requests` scopes) constrain every
+request. A model-scoped window (for example `x-codex-bengalfox-*` or Anthropic
+`7d_opus`) constrains a class only when the class name contains the scope token
+or the window was observed to decrease on a response for that class, so one
+exhausted model limit does not block the account for other models. Request
+windows consume exactly one unit per request and token windows the class mean
+token count.
 
 **Estimation** (`optimizer/estimate.go`). Consumption per window is a decayed
 ratio estimator of native units per effective token (`total - 0.9 * cached`),
@@ -77,7 +88,9 @@ Summing whole intervals makes integer-percent rounding telescope out. Pooled
 per-provider/scope/kind estimates cover new accounts; before any evidence, a
 prior of `prior-requests-per-window` requests per 5-hour-equivalent with 100%
 standard deviation applies. Demand is a seasonal time-of-week hourly EWMA per
-class (`provider/model`), with a global EWMA fallback. Per-credential health
+class (`provider/model`, dated `-YYYYMMDD` suffixes collapsed), with a global
+EWMA fallback. Failed attempts are not counted as demand. Classes are pruned
+after `account-ttl` and capped at 256 (least recently seen evicted). Per-credential health
 tracks success probability and latency. External consumption shows up as
 estimation noise and as `drift-per-hour` uncertainty that grows with
 observation age; the optimizer does not claim to know absolute token
@@ -119,15 +132,20 @@ of the rollout value. A second pass re-evaluates with a continuation policy
 that uses the first-pass prices (one approximate policy-iteration step). Work is
 bounded by `max-work`: scenarios, then time resolution, are reduced. The pick
 path never runs rollouts, I/O, or network calls; it reads an immutable price
-snapshot and updates reservations under a short mutex (about 70 us for 32
-candidates in `BenchmarkEnginePick`).
+snapshot and updates reservations under a short mutex. Windows are indexed by
+account and reserved totals are kept incrementally; `BenchmarkEnginePick`
+measures about 65 us, 350 us, and 760 us for 32, 200, and 500 candidates.
+The rollout time step never exceeds half the shortest window period; when the
+work budget is exceeded, scenarios, then horizon, then least-recently-seen
+accounts are reduced, and demand cells are capped.
 
 **Reservations.** Each pick reserves the expected consumption on every window of
 the executed credential, tagged with the window generation. A usage record
 releases the oldest reservation of that credential (FIFO); orphans (rejected by
 interceptors, canceled, or selected by host fallback without usage) expire after
 `reservation-ttl`. A reservation from an old window instance never depletes a
-new one. Reservations are not persisted.
+new one; reservations are dropped as soon as the window's reset time passes.
+Reservations are not persisted.
 
 **Scope and limits.**
 
@@ -146,11 +164,18 @@ new one. Reservations are not persisted.
 
 **State.** With `state-path` set, the plugin writes a versioned JSON file
 atomically (`checkpoint-interval`, on `plugin.quiesce`, and on shutdown). It
-holds windows, estimators, forecasts, health, opaque identities, shadow
-counters, and a `diagnostics` summary (price time, rollout value and unserved
-demand, reservation count). It contains no tokens, client API keys, or response
-headers. An unreadable file is renamed to `*.corrupt-<time>` and the optimizer
-starts from an empty belief. Accounts, windows, and health unseen for
+holds windows, estimators, forecasts, health, shadow counters, and a
+`diagnostics` summary (price time, rollout value and unserved demand,
+reservation count). Per-credential entries are keyed by a SHA-256 of the auth
+ID (credential filenames can contain emails), and account identities are
+public domain-separated hashes: treat the file as pseudonymous, not anonymous.
+It contains no tokens, client API keys, or response headers. A file with
+invalid content or an unsupported version is renamed to `*.corrupt-<time>` and
+the optimizer starts from an empty belief; on I/O errors the file is kept and
+this instance does not write it. `plugin.quiesce` checkpoints and then stops
+all writes from the outgoing instance, so a hot replacement owns the file.
+Plugin calls recover from panics and return an error envelope instead of
+aborting the host. Accounts, windows, and health unseen for
 `account-ttl` are pruned, so removed credentials keep no phantom capacity.
 
 ## Evaluation
@@ -248,8 +273,9 @@ Host connections, all listed in `docs/fork-patches.md`:
 - `schedulerAuthCandidates` in `sdk/cliproxy/auth/conductor_selection.go`
   populates candidate metadata through `schedulerCandidateMetadata`. It copies
   only scalar `owner_user_id` and `shared` fields plus an opaque
-  `account_identity` hash of `account_id`, `email`, or `sub`. Tokens and
-  arbitrary credential metadata are not exposed.
+  `account_identity` hash of `account_id` combined with `email` (or `sub`),
+  so seats of one Codex workspace stay distinct. Tokens and arbitrary
+  credential metadata are not exposed.
 - `tenancy.balancing.disabled` (default `false`) turns off the host urgency
   bonus for optimizer mode.
 

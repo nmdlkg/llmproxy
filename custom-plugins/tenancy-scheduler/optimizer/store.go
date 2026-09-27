@@ -1,32 +1,39 @@
 package optimizer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // StateVersion is the persisted schema version. Incompatible files are ignored.
 const StateVersion = 1
 
+// ErrCorruptState marks malformed or incompatible optimizer state.
+var ErrCorruptState = errors.New("optimizer state is corrupt")
+
 // persistedState is the plugin-owned durable state. It stores no tokens,
 // client API keys, or response headers; reservations are intentionally not
 // persisted because their attempts do not survive a reload.
 type persistedState struct {
-	Version    int                              `json:"version"`
-	SavedAt    time.Time                        `json:"saved_at"`
-	Windows    []*Window                        `json:"windows"`
-	Pooled     map[string]*ConsumptionEstimator `json:"pooled"`
-	Classes    map[string]*ClassStats           `json:"classes"`
-	Demand     map[string]*DemandForecast       `json:"demand"`
-	Health     map[string]*Health               `json:"health"`
-	AuthSeen   map[string]time.Time             `json:"auth_seen"`
-	Identities map[string]string                `json:"identities"`
-	Accounts   map[string]*AccountState         `json:"accounts"`
-	Shadow     ShadowStats                      `json:"shadow"`
+	Version     int                              `json:"version"`
+	SavedAt     time.Time                        `json:"saved_at"`
+	Windows     []*Window                        `json:"windows"`
+	Pooled      map[string]*ConsumptionEstimator `json:"pooled"`
+	Classes     map[string]*ClassStats           `json:"classes"`
+	Demand      map[string]*DemandForecast       `json:"demand"`
+	Health      map[string]*Health               `json:"health"`
+	AuthSeen    map[string]time.Time             `json:"auth_seen"`
+	Identities  map[string]string                `json:"identities"`
+	ScopedClass map[string]map[string]time.Time  `json:"scoped_classes,omitempty"`
+	Accounts    map[string]*AccountState         `json:"accounts"`
+	Shadow      ShadowStats                      `json:"shadow"`
 	// Diagnostics is informational and ignored on load.
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 }
@@ -51,16 +58,17 @@ func (e *Engine) Save(path, mode string) error {
 	}
 	e.mu.Lock()
 	state := persistedState{
-		Version:    StateVersion,
-		SavedAt:    e.now().UTC(),
-		Pooled:     e.pooled,
-		Classes:    e.classes,
-		Demand:     e.demand,
-		Health:     e.health,
-		AuthSeen:   e.authSeen,
-		Identities: e.identities,
-		Accounts:   e.accounts,
-		Shadow:     e.shadow,
+		Version:     StateVersion,
+		SavedAt:     e.now().UTC(),
+		Pooled:      e.pooled,
+		Classes:     e.classes,
+		Demand:      e.demand,
+		Health:      e.health,
+		AuthSeen:    e.authSeen,
+		Identities:  e.identities,
+		ScopedClass: e.scopedClass,
+		Accounts:    e.accounts,
+		Shadow:      e.shadow,
 	}
 	for _, window := range e.windows {
 		state.Windows = append(state.Windows, window)
@@ -130,26 +138,30 @@ func (e *Engine) Load(path string) error {
 	}
 	var state persistedState
 	if errUnmarshal := json.Unmarshal(raw, &state); errUnmarshal != nil {
-		return fmt.Errorf("optimizer state: decode: %w", errUnmarshal)
+		return fmt.Errorf("%w: decode: %v", ErrCorruptState, errUnmarshal)
 	}
 	if state.Version != StateVersion {
-		return fmt.Errorf("optimizer state: unsupported version %d", state.Version)
+		return fmt.Errorf("%w: unsupported version %d", ErrCorruptState, state.Version)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.windows = make(map[string]*Window, len(state.Windows))
+	e.windowIndex = make(map[string][]string)
 	for _, window := range state.Windows {
 		if window != nil {
-			e.windows[window.Key.String()] = window
+			key := window.Key.String()
+			e.windows[key] = window
+			e.addWindowIndexLocked(key, window.Key)
 		}
 	}
-	e.pooled = orEmpty(state.Pooled)
-	e.classes = orEmpty(state.Classes)
-	e.demand = orEmpty(state.Demand)
-	e.health = orEmpty(state.Health)
-	e.authSeen = orEmpty(state.AuthSeen)
-	e.identities = orEmpty(state.Identities)
-	e.accounts = orEmpty(state.Accounts)
+	e.pooled = nonNilEstimators(state.Pooled)
+	e.classes = nonNilClassStats(state.Classes)
+	e.demand = nonNilForecasts(state.Demand)
+	e.health = nonNilHealth(state.Health)
+	e.authSeen = normalizeAuthTimes(state.AuthSeen)
+	e.identities = normalizeIdentities(state.Identities)
+	e.scopedClass = nonNilScopedClasses(state.ScopedClass)
+	e.accounts = nonNilAccounts(state.Accounts)
 	for _, account := range e.accounts {
 		if account.Classes == nil {
 			account.Classes = make(map[string]time.Time)
@@ -158,12 +170,112 @@ func (e *Engine) Load(path string) error {
 	e.shadow = state.Shadow
 	e.pending = make(map[string]*pendingInterval)
 	e.reservations = make(map[string][]reservationGroup)
+	e.reserved = make(map[string]float64)
+	e.lastReserveSweep = time.Time{}
 	return nil
 }
 
-func orEmpty[K comparable, V any](m map[K]V) map[K]V {
-	if m == nil {
-		return make(map[K]V)
+func hashAuthID(authID string) string {
+	digest := sha256.Sum256([]byte(authID))
+	return "h:" + hex.EncodeToString(digest[:])[:32]
+}
+
+func isHashedAuthKey(key string) bool {
+	if len(key) != 34 || !strings.HasPrefix(key, "h:") {
+		return false
 	}
-	return m
+	_, errDecode := hex.DecodeString(key[2:])
+	return errDecode == nil
+}
+
+func normalizeAuthKey(key string) string {
+	if isHashedAuthKey(key) {
+		return key
+	}
+	return hashAuthID(key)
+}
+
+func nonNilEstimators(input map[string]*ConsumptionEstimator) map[string]*ConsumptionEstimator {
+	output := make(map[string]*ConsumptionEstimator, len(input))
+	for key, value := range input {
+		if value != nil {
+			output[key] = value
+		}
+	}
+	return output
+}
+
+func nonNilClassStats(input map[string]*ClassStats) map[string]*ClassStats {
+	output := make(map[string]*ClassStats, len(input))
+	for key, value := range input {
+		if value != nil {
+			output[key] = value
+		}
+	}
+	return output
+}
+
+func nonNilForecasts(input map[string]*DemandForecast) map[string]*DemandForecast {
+	output := make(map[string]*DemandForecast, len(input))
+	for key, value := range input {
+		if value != nil {
+			output[key] = value
+		}
+	}
+	return output
+}
+
+func nonNilHealth(input map[string]*Health) map[string]*Health {
+	output := make(map[string]*Health, len(input))
+	for key, value := range input {
+		if value != nil {
+			output[normalizeAuthKey(key)] = value
+		}
+	}
+	return output
+}
+
+func normalizeAuthTimes(input map[string]time.Time) map[string]time.Time {
+	output := make(map[string]time.Time, len(input))
+	for key, value := range input {
+		output[normalizeAuthKey(key)] = value
+	}
+	return output
+}
+
+func normalizeIdentities(input map[string]string) map[string]string {
+	output := make(map[string]string, len(input))
+	for key, value := range input {
+		normalized := normalizeAuthKey(key)
+		if !isHashedAuthKey(key) && value == "auth:"+key {
+			value = "auth:" + normalized
+		}
+		output[normalized] = value
+	}
+	return output
+}
+
+func nonNilScopedClasses(input map[string]map[string]time.Time) map[string]map[string]time.Time {
+	output := make(map[string]map[string]time.Time, len(input))
+	for key, classes := range input {
+		if classes == nil {
+			continue
+		}
+		copyClasses := make(map[string]time.Time, len(classes))
+		for class, seen := range classes {
+			copyClasses[class] = seen
+		}
+		output[key] = copyClasses
+	}
+	return output
+}
+
+func nonNilAccounts(input map[string]*AccountState) map[string]*AccountState {
+	output := make(map[string]*AccountState, len(input))
+	for key, value := range input {
+		if value != nil {
+			output[key] = value
+		}
+	}
+	return output
 }

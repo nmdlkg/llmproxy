@@ -2,6 +2,7 @@ package optimizer
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -76,9 +77,10 @@ func (e *ConsumptionEstimator) PerRequestVariance() (float64, bool) {
 
 // ClassStats tracks the effective token size of requests in one demand class.
 type ClassStats struct {
-	MeanTokens float64 `json:"mean_tokens"`
-	SqTokens   float64 `json:"sq_tokens"`
-	Count      float64 `json:"count"`
+	MeanTokens float64   `json:"mean_tokens"`
+	SqTokens   float64   `json:"sq_tokens"`
+	Count      float64   `json:"count"`
+	LastSeen   time.Time `json:"last_seen,omitempty"`
 }
 
 // Add records one completed request's effective token count.
@@ -111,6 +113,7 @@ type DemandForecast struct {
 	GlobalSet bool                  `json:"global_set"`
 	Hour      int64                 `json:"hour"`
 	Count     float64               `json:"count"`
+	LastSeen  time.Time             `json:"last_seen,omitempty"`
 }
 
 func unixHour(t time.Time) int64 { return t.Unix() / 3600 }
@@ -124,6 +127,7 @@ func weekBin(hour int64) int {
 func (d *DemandForecast) Record(now time.Time) {
 	d.roll(now)
 	d.Count++
+	d.LastSeen = now
 }
 
 func (d *DemandForecast) roll(now time.Time) {
@@ -212,6 +216,8 @@ func (h *Health) SuccessProbability() float64 {
 	return h.Success
 }
 
+var datedModelSuffix = regexp.MustCompile(`-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+
 // ClassOf maps a request to its demand class: provider plus model family.
 // Effort variants and dated suffixes collapse so forecasts pool comparable demand.
 func ClassOf(provider, model string) string {
@@ -222,6 +228,7 @@ func ClassOf(provider, model string) string {
 	if index := strings.LastIndexByte(model, '/'); index >= 0 {
 		model = model[index+1:]
 	}
+	model = datedModelSuffix.ReplaceAllString(model, "")
 	return strings.ToLower(strings.TrimSpace(provider)) + "/" + strings.TrimSpace(model)
 }
 

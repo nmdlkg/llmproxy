@@ -38,17 +38,18 @@ type Usage struct {
 
 // Window is the durable state of one account window instance.
 type Window struct {
-	Key        WindowKey `json:"key"`
-	Unit       Unit      `json:"unit"`
-	Capacity   float64   `json:"capacity"`
-	Remaining  float64   `json:"remaining"`
-	MaxSeen    float64   `json:"max_seen"`
-	ResetAt    time.Time `json:"reset_at"`
-	Duration   int64     `json:"duration_ns"`
-	Resolution float64   `json:"resolution"`
-	ObservedAt time.Time `json:"observed_at"`
-	Source     string    `json:"source"`
-	Generation uint64    `json:"generation"`
+	Key               WindowKey `json:"key"`
+	Unit              Unit      `json:"unit"`
+	Capacity          float64   `json:"capacity"`
+	Remaining         float64   `json:"remaining"`
+	MaxSeen           float64   `json:"max_seen"`
+	ResetAt           time.Time `json:"reset_at"`
+	Duration          int64     `json:"duration_ns"`
+	Resolution        float64   `json:"resolution"`
+	ObservedAt        time.Time `json:"observed_at"`
+	Source            string    `json:"source"`
+	Generation        uint64    `json:"generation"`
+	generationResetAt time.Time `json:"-"`
 	// Estimator learns this window's native units per effective token.
 	Estimator ConsumptionEstimator `json:"estimator"`
 }
@@ -106,19 +107,23 @@ type Engine struct {
 	cfg Config
 	now func() time.Time
 
-	mu           sync.Mutex
-	windows      map[string]*Window
-	pooled       map[string]*ConsumptionEstimator
-	classes      map[string]*ClassStats
-	demand       map[string]*DemandForecast
-	health       map[string]*Health
-	authSeen     map[string]time.Time
-	identities   map[string]string
-	accounts     map[string]*AccountState
-	pending      map[string]*pendingInterval
-	reservations map[string][]reservationGroup
-	shadow       ShadowStats
-	cursor       uint64
+	mu               sync.Mutex
+	windows          map[string]*Window
+	windowIndex      map[string][]string
+	pooled           map[string]*ConsumptionEstimator
+	classes          map[string]*ClassStats
+	demand           map[string]*DemandForecast
+	health           map[string]*Health
+	authSeen         map[string]time.Time
+	identities       map[string]string
+	scopedClass      map[string]map[string]time.Time
+	accounts         map[string]*AccountState
+	pending          map[string]*pendingInterval
+	reservations     map[string][]reservationGroup
+	reserved         map[string]float64
+	lastReserveSweep time.Time
+	shadow           ShadowStats
+	cursor           uint64
 
 	prices atomic.Pointer[PriceSnapshot]
 }
@@ -132,15 +137,18 @@ func NewEngine(cfg Config, now func() time.Time) *Engine {
 		cfg:          cfg,
 		now:          now,
 		windows:      make(map[string]*Window),
+		windowIndex:  make(map[string][]string),
 		pooled:       make(map[string]*ConsumptionEstimator),
 		classes:      make(map[string]*ClassStats),
 		demand:       make(map[string]*DemandForecast),
 		health:       make(map[string]*Health),
 		authSeen:     make(map[string]time.Time),
 		identities:   make(map[string]string),
+		scopedClass:  make(map[string]map[string]time.Time),
 		accounts:     make(map[string]*AccountState),
 		pending:      make(map[string]*pendingInterval),
 		reservations: make(map[string][]reservationGroup),
+		reserved:     make(map[string]float64),
 	}
 }
 
@@ -149,19 +157,22 @@ func (e *Engine) Config() Config { return e.cfg }
 
 func pooledKey(provider, scope, kind string) string { return provider + "|" + scope + "|" + kind }
 
+func accountProviderKey(account, provider string) string { return account + "|" + provider }
+
 func accountOf(c Candidate) string {
 	if account := strings.TrimSpace(c.Account); account != "" {
 		return account
 	}
-	return "auth:" + c.ID
+	return "auth:" + hashAuthID(c.ID)
 }
 
 // observeCandidatesLocked records identity, offer time, and class eligibility.
 func (e *Engine) observeCandidatesLocked(model string, candidates []Candidate, now time.Time) {
 	for _, candidate := range candidates {
 		account := accountOf(candidate)
-		e.identities[candidate.ID] = account
-		e.authSeen[candidate.ID] = now
+		authKey := hashAuthID(candidate.ID)
+		e.identities[authKey] = account
+		e.authSeen[authKey] = now
 		state := e.accounts[account]
 		if state == nil {
 			state = &AccountState{Classes: make(map[string]time.Time)}
@@ -170,14 +181,15 @@ func (e *Engine) observeCandidatesLocked(model string, candidates []Candidate, n
 		state.Provider = strings.ToLower(candidate.Provider)
 		state.LastSeen = now
 		state.Classes[ClassOf(candidate.Provider, model)] = now
+		trimAccountClasses(state, 256)
 	}
 }
 
 func (e *Engine) accountForAuthLocked(authID string) string {
-	if account, ok := e.identities[authID]; ok {
+	if account, ok := e.identities[hashAuthID(authID)]; ok {
 		return account
 	}
-	return "auth:" + authID
+	return "auth:" + hashAuthID(authID)
 }
 
 // RecordUsage ingests one completed attempt: it releases the oldest
@@ -199,33 +211,34 @@ func (e *Engine) RecordUsage(usage Usage) {
 	defer e.mu.Unlock()
 
 	e.releaseLocked(usage.AuthID)
-	health := e.health[usage.AuthID]
+	authKey := hashAuthID(usage.AuthID)
+	health := e.health[authKey]
 	if health == nil {
 		health = &Health{}
-		e.health[usage.AuthID] = health
+		e.health[authKey] = health
 	}
 	health.Add(usage.Failed, usage.Latency)
-	e.authSeen[usage.AuthID] = maxTime(e.authSeen[usage.AuthID], now)
-	if usage.Generate {
+	e.authSeen[authKey] = maxTime(e.authSeen[authKey], now)
+	if usage.Generate && !usage.Failed {
 		forecast := e.demand[class]
 		if forecast == nil {
 			forecast = &DemandForecast{}
 			e.demand[class] = forecast
 		}
 		forecast.Record(now)
-		if !usage.Failed {
-			stats := e.classes[class]
-			if stats == nil {
-				stats = &ClassStats{}
-				e.classes[class] = stats
-			}
-			stats.Add(tokens)
+		stats := e.classes[class]
+		if stats == nil {
+			stats = &ClassStats{}
+			e.classes[class] = stats
 		}
+		stats.Add(tokens)
+		stats.LastSeen = now
 	}
 
 	account := e.accountForAuthLocked(usage.AuthID)
-	for key, window := range e.windows {
-		if window.Key.Account != account || window.Key.Provider != provider {
+	for _, key := range e.windowIndex[accountProviderKey(account, provider)] {
+		window := e.windows[key]
+		if window == nil {
 			continue
 		}
 		pending := e.pending[key]
@@ -237,8 +250,32 @@ func (e *Engine) RecordUsage(usage Usage) {
 		pending.requests++
 	}
 	for _, observation := range ParseWindows(provider, usage.Headers, now) {
+		key := (WindowKey{Account: account, Provider: observation.Provider, Scope: observation.Scope, Kind: observation.Kind}).String()
+		if observation.Scope != "default" && observation.Scope != "tokens" && observation.Scope != "requests" &&
+			(scopeMatchesClass(observation.Scope, class) || e.windowDecreasedLocked(key, observation)) {
+			classes := e.scopedClass[key]
+			if classes == nil {
+				classes = make(map[string]time.Time)
+				e.scopedClass[key] = classes
+			}
+			classes[class] = now
+		}
 		e.applyObservationLocked(account, observation, now)
 	}
+}
+
+func scopeMatchesClass(scope, class string) bool {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	return scope != "" && strings.Contains(strings.ToLower(class), scope)
+}
+
+func (e *Engine) windowDecreasedLocked(key string, observation Observation) bool {
+	window := e.windows[key]
+	if window == nil || window.ResetAt.IsZero() || observation.ResetAt.IsZero() ||
+		absDuration(window.ResetAt.Sub(observation.ResetAt)) > generationTolerance {
+		return false
+	}
+	return observation.Remaining < window.Remaining
 }
 
 func (e *Engine) applyObservationLocked(account string, observation Observation, now time.Time) {
@@ -248,6 +285,7 @@ func (e *Engine) applyObservationLocked(account string, observation Observation,
 	if window == nil {
 		window = &Window{Key: wk}
 		e.windows[key] = window
+		e.addWindowIndexLocked(key, wk)
 	} else if now.Before(window.ObservedAt) {
 		// Out-of-order completion: an older snapshot must not overwrite a newer one.
 		return
@@ -270,7 +308,11 @@ func (e *Engine) applyObservationLocked(account string, observation Observation,
 		default:
 			// A new window instance began. Reservations of the old instance
 			// must not deplete it.
-			window.Generation++
+			if !window.generationResetAt.Equal(window.ResetAt) {
+				e.invalidateGenerationReservationsLocked(key, window.Generation)
+				window.Generation++
+				window.generationResetAt = window.ResetAt
+			}
 		}
 	}
 	delete(e.pending, key)
@@ -283,6 +325,9 @@ func (e *Engine) applyObservationLocked(account string, observation Observation,
 	window.Resolution = observation.Resolution
 	window.ObservedAt = now
 	window.Source = observation.Source
+	if window.generationResetAt.Equal(window.ResetAt) && now.Before(window.ResetAt) {
+		window.generationResetAt = time.Time{}
+	}
 }
 
 func absDuration(d time.Duration) time.Duration {
@@ -292,23 +337,93 @@ func absDuration(d time.Duration) time.Duration {
 	return d
 }
 
+func (e *Engine) addWindowIndexLocked(key string, window WindowKey) {
+	indexKey := accountProviderKey(window.Account, window.Provider)
+	for _, existing := range e.windowIndex[indexKey] {
+		if existing == key {
+			return
+		}
+	}
+	e.windowIndex[indexKey] = append(e.windowIndex[indexKey], key)
+	sort.Strings(e.windowIndex[indexKey])
+}
+
+func (e *Engine) removeWindowIndexLocked(key string, window WindowKey) {
+	indexKey := accountProviderKey(window.Account, window.Provider)
+	keys := e.windowIndex[indexKey]
+	for i, existing := range keys {
+		if existing == key {
+			e.windowIndex[indexKey] = append(keys[:i], keys[i+1:]...)
+			if len(e.windowIndex[indexKey]) == 0 {
+				delete(e.windowIndex, indexKey)
+			}
+			return
+		}
+	}
+}
+
 func (e *Engine) releaseLocked(authID string) {
 	groups := e.reservations[authID]
 	if len(groups) == 0 {
 		return
 	}
 	if len(groups) == 1 {
+		e.subtractReservationLocked(groups[0])
 		delete(e.reservations, authID)
 		return
 	}
+	e.subtractReservationLocked(groups[0])
 	e.reservations[authID] = groups[1:]
 }
 
 func (e *Engine) expireReservationsLocked(now time.Time) {
 	for authID, groups := range e.reservations {
+		for len(groups) > 0 && now.Sub(groups[0].at) >= e.cfg.ReservationTTL {
+			e.subtractReservationLocked(groups[0])
+			groups = groups[1:]
+		}
+		if len(groups) == 0 {
+			delete(e.reservations, authID)
+		} else {
+			e.reservations[authID] = groups
+		}
+	}
+}
+
+func (e *Engine) reservedLocked() map[string]float64 {
+	if len(e.reservations) == 0 {
+		e.reserved = make(map[string]float64)
+	}
+	return e.reserved
+}
+
+func (e *Engine) subtractReservationLocked(group reservationGroup) {
+	for _, item := range group.items {
+		if window := e.windows[item.key]; window != nil && window.Generation == item.generation {
+			e.reserved[item.key] -= item.amount
+			if e.reserved[item.key] <= 1e-12 {
+				delete(e.reserved, item.key)
+			}
+		}
+	}
+}
+
+func (e *Engine) invalidateGenerationReservationsLocked(key string, generation uint64) {
+	for authID, groups := range e.reservations {
+		for groupIndex := range groups {
+			items := groups[groupIndex].items[:0]
+			for _, item := range groups[groupIndex].items {
+				if item.key == key && item.generation == generation {
+					e.reserved[key] -= item.amount
+					continue
+				}
+				items = append(items, item)
+			}
+			groups[groupIndex].items = items
+		}
 		kept := groups[:0]
 		for _, group := range groups {
-			if now.Sub(group.at) < e.cfg.ReservationTTL {
+			if len(group.items) > 0 {
 				kept = append(kept, group)
 			}
 		}
@@ -318,20 +433,44 @@ func (e *Engine) expireReservationsLocked(now time.Time) {
 			e.reservations[authID] = kept
 		}
 	}
+	if e.reserved[key] <= 1e-12 {
+		delete(e.reserved, key)
+	}
 }
 
-func (e *Engine) reservedLocked() map[string]float64 {
-	reserved := make(map[string]float64)
-	for _, groups := range e.reservations {
+func (e *Engine) purgeResetReservationsLocked(now time.Time) {
+	if !e.lastReserveSweep.IsZero() && now.Sub(e.lastReserveSweep) < time.Second {
+		return
+	}
+	e.lastReserveSweep = now
+	for authID, groups := range e.reservations {
+		keptGroups := groups[:0]
 		for _, group := range groups {
+			keptItems := group.items[:0]
 			for _, item := range group.items {
-				if window := e.windows[item.key]; window != nil && window.Generation == item.generation {
-					reserved[item.key] += item.amount
+				window := e.windows[item.key]
+				if window != nil && window.Generation == item.generation && !window.ResetAt.IsZero() && !now.Before(window.ResetAt) {
+					e.reserved[item.key] -= item.amount
+					continue
 				}
+				keptItems = append(keptItems, item)
+			}
+			group.items = keptItems
+			if len(group.items) > 0 {
+				keptGroups = append(keptGroups, group)
 			}
 		}
+		if len(keptGroups) == 0 {
+			delete(e.reservations, authID)
+		} else {
+			e.reservations[authID] = keptGroups
+		}
 	}
-	return reserved
+	for key, amount := range e.reserved {
+		if amount <= 1e-12 {
+			delete(e.reserved, key)
+		}
+	}
 }
 
 // windowView is a window's budget as believed at a decision time.
@@ -353,6 +492,11 @@ func (e *Engine) viewLocked(key string, window *Window, now time.Time) windowVie
 		view.capacity = window.MaxSeen
 	}
 	if !window.ResetAt.IsZero() && !now.Before(window.ResetAt) {
+		if !window.generationResetAt.Equal(window.ResetAt) {
+			e.invalidateGenerationReservationsLocked(key, window.Generation)
+			window.Generation++
+			window.generationResetAt = window.ResetAt
+		}
 		// The observed instance has ended. A fixed reset restores only this
 		// window. The next instance may start on first use, so its reset time
 		// is unknown; the latest possible time is the conservative assumption.
@@ -371,10 +515,31 @@ func (e *Engine) viewLocked(key string, window *Window, now time.Time) windowVie
 	return view
 }
 
+func (e *Engine) scopedWindowAppliesLocked(key, class string) bool {
+	window := e.windows[key]
+	if window == nil || window.Key.Scope == "default" || window.Key.Scope == "tokens" || window.Key.Scope == "requests" {
+		return true
+	}
+	if scopeMatchesClass(window.Key.Scope, class) {
+		return true
+	}
+	_, ok := e.scopedClass[key][class]
+	return ok
+}
+
 // consumptionLocked returns the mean and standard deviation of the native
 // consumption of one class request on a window.
 func (e *Engine) consumptionLocked(window *Window, capacity float64, class string) (float64, float64) {
 	stats := e.classes[class]
+	if window.Unit == UnitRequests {
+		return 1, 0
+	}
+	if window.Unit == UnitTokens {
+		if stats != nil && stats.Count > 0 {
+			return stats.MeanTokens, stats.SD()
+		}
+		return 1, 1
+	}
 	rate, hasRate := window.Estimator.Rate()
 	variance, hasVariance := window.Estimator.PerRequestVariance()
 	if !hasRate {
@@ -406,13 +571,13 @@ func (e *Engine) consumptionLocked(window *Window, capacity float64, class strin
 }
 
 func (e *Engine) accountWindowsLocked(account, provider string, now time.Time) []windowView {
-	var views []windowView
-	for key, window := range e.windows {
-		if window.Key.Account == account && window.Key.Provider == provider {
+	keys := e.windowIndex[accountProviderKey(account, provider)]
+	views := make([]windowView, 0, len(keys))
+	for _, key := range keys {
+		if window := e.windows[key]; window != nil {
 			views = append(views, e.viewLocked(key, window, now))
 		}
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].key < views[j].key })
 	return views
 }
 
@@ -442,6 +607,7 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	defer e.mu.Unlock()
 	e.observeCandidatesLocked(model, candidates, now)
 	e.expireReservationsLocked(now)
+	e.purgeResetReservationsLocked(now)
 
 	snapshot := e.prices.Load()
 	reserved := e.reservedLocked()
@@ -453,7 +619,7 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 		account := accountOf(candidate)
 		provider := strings.ToLower(candidate.Provider)
 		class := ClassOf(provider, model)
-		health := e.health[candidate.ID]
+		health := e.health[hashAuthID(candidate.ID)]
 		success := health.SuccessProbability()
 		latency := 0.0
 		if health != nil {
@@ -464,6 +630,9 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 		views := e.accountWindowsLocked(account, provider, now)
 		cost := 0.0
 		for _, view := range views {
+			if !e.scopedWindowAppliesLocked(view.key, class) {
+				continue
+			}
 			mean, sd := e.consumptionLocked(view.window, view.capacity, class)
 			available := view.remaining - reserved[view.key]
 			if view.stale && view.window.ResetAt.After(now) {
@@ -516,7 +685,11 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	}
 	if reserveIndex >= 0 {
 		id := results[reserveIndex].candidate.ID
-		e.reservations[id] = append(e.reservations[id], reservationGroup{at: now, items: results[reserveIndex].amounts})
+		group := reservationGroup{at: now, items: results[reserveIndex].amounts}
+		e.reservations[id] = append(e.reservations[id], group)
+		for _, item := range group.items {
+			e.reserved[item.key] += item.amount
+		}
 	}
 	return decision
 }
@@ -598,6 +771,19 @@ func (e *Engine) Prune() {
 		if _, ok := e.accounts[window.Key.Account]; !ok && now.Sub(window.ObservedAt) > e.cfg.AccountTTL {
 			delete(e.windows, key)
 			delete(e.pending, key)
+			delete(e.scopedClass, key)
+			e.removeWindowIndexLocked(key, window.Key)
+			delete(e.reserved, key)
+		}
+	}
+	for key, classes := range e.scopedClass {
+		for class, seen := range classes {
+			if now.Sub(seen) > e.cfg.AccountTTL {
+				delete(classes, class)
+			}
+		}
+		if len(classes) == 0 {
+			delete(e.scopedClass, key)
 		}
 	}
 	for authID, seen := range e.authSeen {
@@ -605,7 +791,80 @@ func (e *Engine) Prune() {
 			delete(e.authSeen, authID)
 			delete(e.health, authID)
 			delete(e.identities, authID)
-			delete(e.reservations, authID)
+			for reservationAuthID, groups := range e.reservations {
+				if hashAuthID(reservationAuthID) != authID {
+					continue
+				}
+				for _, group := range groups {
+					e.subtractReservationLocked(group)
+				}
+				delete(e.reservations, reservationAuthID)
+			}
+		}
+	}
+	e.pruneClassesLocked(now)
+}
+
+func trimAccountClasses(state *AccountState, limit int) {
+	for len(state.Classes) > limit {
+		var oldest string
+		var oldestAt time.Time
+		for class, seen := range state.Classes {
+			if oldest == "" || seen.Before(oldestAt) {
+				oldest, oldestAt = class, seen
+			}
+		}
+		delete(state.Classes, oldest)
+	}
+}
+
+func (e *Engine) pruneClassesLocked(now time.Time) {
+	ttl := e.cfg.AccountTTL
+	lastSeen := make(map[string]time.Time, len(e.demand)+len(e.classes))
+	for class, forecast := range e.demand {
+		if forecast != nil {
+			lastSeen[class] = maxTime(lastSeen[class], forecast.LastSeen)
+		}
+	}
+	for class, stats := range e.classes {
+		if stats != nil {
+			lastSeen[class] = maxTime(lastSeen[class], stats.LastSeen)
+		}
+	}
+	for class, seen := range lastSeen {
+		if !seen.IsZero() && now.Sub(seen) > ttl {
+			delete(e.demand, class)
+			delete(e.classes, class)
+		}
+	}
+	for account, state := range e.accounts {
+		for class, seen := range state.Classes {
+			if now.Sub(seen) > ttl {
+				delete(state.Classes, class)
+			}
+		}
+		if len(state.Classes) == 0 && now.Sub(state.LastSeen) > ttl {
+			delete(e.accounts, account)
+		}
+	}
+	if len(lastSeen) <= 256 {
+		return
+	}
+	classes := make([]string, 0, len(lastSeen))
+	for class := range lastSeen {
+		classes = append(classes, class)
+	}
+	sort.Slice(classes, func(i, j int) bool {
+		if lastSeen[classes[i]].Equal(lastSeen[classes[j]]) {
+			return classes[i] < classes[j]
+		}
+		return lastSeen[classes[i]].After(lastSeen[classes[j]])
+	})
+	for _, class := range classes[256:] {
+		delete(e.demand, class)
+		delete(e.classes, class)
+		for _, state := range e.accounts {
+			delete(state.Classes, class)
 		}
 	}
 }

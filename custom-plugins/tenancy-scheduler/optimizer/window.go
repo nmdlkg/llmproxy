@@ -251,7 +251,8 @@ func parseAbsoluteTime(value string) (time.Time, bool) {
 
 func parseSecondsFrom(value string, now time.Time) (time.Time, bool) {
 	seconds, ok := parseNonNegative(value)
-	if !ok || seconds > float64(math.MaxInt32)*1000 {
+	const maxResetAfter = 400 * 24 * 60 * 60
+	if !ok || seconds > maxResetAfter {
 		return time.Time{}, false
 	}
 	return now.Add(time.Duration(seconds) * time.Second), true

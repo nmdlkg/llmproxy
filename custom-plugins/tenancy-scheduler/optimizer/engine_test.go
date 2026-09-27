@@ -212,7 +212,7 @@ func TestEngineStatePersistsRoundTrip(t *testing.T) {
 	if errLoad := restored.Load(path); errLoad != nil {
 		t.Fatal(errLoad)
 	}
-	if len(restored.windows) != 2 || restored.identities["a"] != "acct-a" || restored.classes["codex/gpt-5"] == nil {
+	if len(restored.windows) != 2 || restored.identities[hashAuthID("a")] != "acct-a" || restored.classes["codex/gpt-5"] == nil {
 		t.Fatalf("restored state incomplete: windows=%d identities=%v", len(restored.windows), restored.identities)
 	}
 	if errWrite := writeFileAtomic(path, []byte(`{"version":99}`)); errWrite != nil {
