@@ -55,6 +55,8 @@ type UsageReporter struct {
 	ttftStart           time.Time
 	ttftSet             bool
 	once                sync.Once
+	// streamedOutput estimates output for attempts interrupted before usage arrives.
+	streamedOutput streamedOutputCounter
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
