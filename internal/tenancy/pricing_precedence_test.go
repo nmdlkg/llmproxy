@@ -3,7 +3,7 @@ package tenancy
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // usdPerMillion builds the config price type used by model-price-overrides.

@@ -6,7 +6,7 @@ import (
 	"go/token"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/authfiles"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/authfiles"
 )
 
 // TestAuthFileNameSafetyParity keeps the fork's authfiles.IsUnsafeAuthFileName

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // Fork seam: soft preferred-auth IDs carried from tenancy credential

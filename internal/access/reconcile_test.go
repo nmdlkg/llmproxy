@@ -3,10 +3,10 @@ package access
 import (
 	"testing"
 
-	useraccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/user_access"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	useraccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/user_access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenancy"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 func TestApplyAccessProvidersOrdersAndDisablesTenantProvider(t *testing.T) {
