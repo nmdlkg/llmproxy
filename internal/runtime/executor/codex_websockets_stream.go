@@ -544,6 +544,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		var terminateErr error
 
 		defer close(out)
+		// A client cancellation exits without a terminal event; still account the attempt.
+		defer reporter.PublishInterrupted(ctx)
 		defer func() {
 			if sess != nil {
 				sess.clearActive(conn, readCh)

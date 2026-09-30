@@ -271,3 +271,36 @@ func TestRegistrationStillRejectsFileAuthPresentOnDisk(t *testing.T) {
 		t.Fatalf("duplicate err=%v", errCheck)
 	}
 }
+
+// TestRegistrationAllowsDistinctCodexWorkspaceSeats covers AX-49: Codex
+// account_id is a shared workspace ID, so another member of the same workspace
+// or the same member in another workspace must be able to register.
+func TestRegistrationAllowsDistinctCodexWorkspaceSeats(t *testing.T) {
+	cfg, manager, persister := newPersister(t)
+	existing := []byte(`{"type":"codex","account_id":"ws-1","email":"a@example.com"}`)
+	if errWrite := authfiles.WriteAuthFile(tenantContext("user-a"), cfg, manager, persister, "codex-a.json", existing); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	cases := []struct {
+		name string
+		meta map[string]any
+		want error
+	}{
+		{name: "teammate", meta: map[string]any{"account_id": "ws-1", "email": "b@example.com"}},
+		{name: "other workspace", meta: map[string]any{"account_id": "ws-2", "email": "a@example.com"}},
+		{name: "same seat", meta: map[string]any{"account_id": "ws-1", "email": "A@example.com"}, want: authfiles.ErrCredentialExists},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record := &coreauth.Auth{ID: "codex-new.json", FileName: "codex-new.json", Provider: "codex", Metadata: tc.meta}
+			release := authfiles.LockRegistration()
+			defer release()
+			// Check both the runtime records and the on-disk scan.
+			for _, m := range []*coreauth.Manager{manager, nil} {
+				if errCheck := authfiles.CheckUserRegistration(tenantContext("user-b"), cfg, m, persister, record); !errors.Is(errCheck, tc.want) {
+					t.Fatalf("manager=%v err=%v, want %v", m != nil, errCheck, tc.want)
+				}
+			}
+		})
+	}
+}

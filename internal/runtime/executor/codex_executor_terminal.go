@@ -592,10 +592,12 @@ func isCodexEmptyPart(payload []byte) bool {
 }
 
 // observeCodexTokenEvent inspects a stream payload, marks TTFT on the first substantive
-// token event, and records the model the upstream reports serving.
+// token event, records the model the upstream reports serving, and tracks streamed
+// output so interrupted attempts can still be accounted.
 func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
 	helps.ObserveResponsesTokenEvent(reporter, payload)
 	reporter.ObserveCodexResponseModel(payload)
+	reporter.ObserveCodexOutputDelta(payload)
 }
 
 // newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.

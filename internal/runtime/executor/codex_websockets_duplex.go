@@ -354,6 +354,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 		}
 		reporter := initialReporter
+		// A client cancellation exits without a terminal event; still account the
+		// in-flight response. Earlier responses are already published.
+		defer func() { reporter.PublishInterrupted(ctx) }()
 		firstResponse := true
 		responseActive := false
 		outputItems := make(map[int64][]byte)
