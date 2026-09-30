@@ -132,7 +132,12 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		sharedScheduler.configure(cfg)
 		return okEnvelope(map[string]any{
 			"schema_version": pluginabi.SchemaVersion,
-			"metadata":       pluginapi.Metadata{Name: "tenancy-scheduler", Version: "0.2.0"},
+			"metadata": pluginapi.Metadata{
+				Name:             "tenancy-scheduler",
+				Version:          "0.2.0",
+				Author:           "router-for-me",
+				GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
+			},
 			"capabilities": map[string]bool{
 				"scheduler":                   true,
 				"scheduler_across_priorities": cfg.AcrossPriorities && cfg.Mode != modeLegacy,
