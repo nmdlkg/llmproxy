@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenancy"
 )
 
 // seedUsage appends ledger rows for one user through the real tenancy store.

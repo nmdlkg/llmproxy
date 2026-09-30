@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
-	useraccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/user_access"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
+	useraccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/user_access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenancy"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	log "github.com/sirupsen/logrus"
 )
 
