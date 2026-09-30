@@ -91,6 +91,10 @@ type ModelPriceOverride struct {
 // TenancyBalancing configures preference for credentials whose quota window resets soon
 // and that still have unused budget.
 type TenancyBalancing struct {
+	// Disabled turns off the host reset-window priority bonus. Set it when the
+	// tenancy-scheduler plugin runs in optimizer mode so two policies do not compete.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// UrgencyHorizon is how close a window reset must be to earn a priority bonus.
 	// Duration string, e.g. "30m".
 	UrgencyHorizon string `yaml:"urgency-horizon,omitempty" json:"urgency-horizon,omitempty"`

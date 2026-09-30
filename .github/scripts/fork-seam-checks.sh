@@ -12,8 +12,13 @@ run() {
 }
 
 # Seam 0: scheduler sharing metadata (host side and plugin module).
-run go test ./sdk/cliproxy/auth -run 'TestPluginSchedulerReceivesSharingMetadata|TestManagerPluginScheduler|TestManagerInactivePluginScheduler'
+run go test ./sdk/cliproxy/auth -run 'TestPluginSchedulerReceivesSharingMetadata|TestSchedulerCandidateMetadataAccountIdentity|TestManagerPluginScheduler|TestManagerInactivePluginScheduler'
 (cd custom-plugins/tenancy-scheduler && run go test ./...)
+# Real CGO load of the plugin through the host loader (register, pick, usage, quiesce, shutdown).
+plugin_tmp="$(mktemp -d)"
+trap 'rm -rf "$plugin_tmp"' EXIT
+(cd custom-plugins/tenancy-scheduler && run go build -buildmode=c-shared -o "$plugin_tmp/tenancy-scheduler.so" .)
+run env TENANCY_SCHEDULER_PLUGIN="$plugin_tmp/tenancy-scheduler.so" go test ./internal/pluginhost -run '^TestNativeTenancySchedulerSmoke$' -count=1
 
 # Seams 1-2: effective priority and preferred-auth first pass.
 run go test ./sdk/cliproxy/auth -run '^(TestSchedulerPriorityResolver|TestSchedulerPreferredAuthSingleProvider|TestManagerPreferredCoolingAuthRequestFallsThrough|TestSchedulerPreferredAuthMixedProvider|TestPreferredAuthIDsFromMetadata)$'

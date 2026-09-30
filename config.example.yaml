@@ -1337,6 +1337,9 @@ tenancy:
     urgency-horizon: "30m"
     high-water: 0.9
     urgency-bonus: 1
+    # Set to true when custom-plugins/tenancy-scheduler runs in optimizer mode,
+    # so the host bonus does not compete with the plugin policy. Restart required.
+    # disabled: false
 
 # Legacy compatibility reference (comments only; not part of this v8 template).
 # Old files and /v0/management still work without a v8 write. Existing legacy-only

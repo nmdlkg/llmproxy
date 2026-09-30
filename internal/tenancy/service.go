@@ -91,7 +91,7 @@ func NewService(cfg config.TenancyConfig, authDir string, authManager *coreauth.
 		usageSink:   usageSink,
 		validation:  validation,
 	}
-	if authManager != nil {
+	if authManager != nil && !cfg.Balancing.Disabled {
 		// The scheduler calls the installed resolver while holding its mutex.
 		// balancingRuntime keeps Manager/store access in its background loop and
 		// exposes only an immutable atomic snapshot to that lock-held callback.

@@ -240,6 +240,28 @@ func TestNewServiceWithNilAuthManagerDoesNotStartBalancing(t *testing.T) {
 	}
 }
 
+func TestNewServiceWithBalancingDisabledDoesNotInstallResolver(t *testing.T) {
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	service, errNew := NewService(config.TenancyConfig{
+		Enabled:   true,
+		DBPath:    t.TempDir() + "/tenancy.db",
+		Balancing: config.TenancyBalancing{Disabled: true},
+	}, t.TempDir(), manager)
+	if errNew != nil {
+		t.Fatalf("NewService() error = %v", errNew)
+	}
+	t.Cleanup(func() {
+		if errClose := service.Close(); errClose != nil {
+			t.Errorf("Service.Close() error = %v", errClose)
+		}
+	})
+	if service.balancing != nil {
+		t.Fatalf("balancing runtime = %#v, want nil when disabled", service.balancing)
+	}
+	// Triggering is a no-op without a runtime.
+	service.TriggerBalancing()
+}
+
 func TestBalancingResolverDoesNotDeadlockConcurrentUpsertsAndRecomputes(t *testing.T) {
 	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
 	const updaterCount = 4
