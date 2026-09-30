@@ -39,6 +39,9 @@ func TestNativeTenancySchedulerSmoke(t *testing.T) {
 	if errRegister != nil {
 		t.Fatal(errRegister)
 	}
+	if !validPlugin(plugin) {
+		t.Fatalf("native plugin registration rejected by host: metadata = %+v", plugin.Metadata)
+	}
 	if plugin.Capabilities.Scheduler == nil || plugin.Capabilities.UsagePlugin == nil || plugin.Capabilities.SchedulerAcrossPriorities {
 		t.Fatalf("capabilities = %+v", plugin.Capabilities)
 	}
