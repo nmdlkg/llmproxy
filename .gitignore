@@ -34,6 +34,7 @@ docs/*
 !docs/build-and-deploy.md
 !docs/handoff-conflict-surface-refactor.md
 USER_GUIDE.md
+!docs/management-api-v8.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

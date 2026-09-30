@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage/otelspec"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/otelusage/otelspec"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -31,7 +31,7 @@ const (
 	// DefaultServiceName is the OTel service.name used when none is configured.
 	DefaultServiceName = otelspec.DefaultServiceName
 
-	instrumentationName = "github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage"
+	instrumentationName = "github.com/router-for-me/CLIProxyAPI/v8/internal/otelusage"
 	exportWarnInterval  = time.Minute
 )
 
