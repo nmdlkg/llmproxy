@@ -30,6 +30,7 @@ auths/*
 
 # Documentation
 docs/*
+!docs/user-quota-planning.md
 !docs/admin-level-runbook.md
 !docs/build-and-deploy.md
 !docs/handoff-conflict-surface-refactor.md
