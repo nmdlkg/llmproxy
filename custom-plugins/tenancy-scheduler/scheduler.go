@@ -92,7 +92,7 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 	}
 	s.mu.RLock()
 	mode, engine, across := s.cfg.Mode, s.engine, s.cfg.AcrossPriorities
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 	if mode == "" {
 		mode = modeLegacy
 	}
@@ -132,8 +132,8 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 // for estimation are copied; client API keys and bodies are dropped here.
 func (s *scheduler) handleUsage(record pluginapi.UsageRecord) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	engine := s.engine
-	s.mu.RUnlock()
 	if engine == nil {
 		return
 	}
@@ -152,6 +152,9 @@ func (s *scheduler) handleUsage(record pluginapi.UsageRecord) {
 		Generate:    record.Generate,
 		Failed:      record.Failed,
 		Latency:     record.Latency,
+		TTFT:        record.TTFT,
+		StatusCode:  record.Failure.StatusCode,
+		RequestedAt: record.RequestedAt,
 		CompletedAt: observedAt,
 		Tokens: optimizer.EffectiveTokens(record.Detail.InputTokens, record.Detail.OutputTokens,
 			record.Detail.ReasoningTokens, record.Detail.CachedTokens, record.Detail.TotalTokens),
@@ -170,6 +173,9 @@ func (s *scheduler) configure(cfg pluginConfig) {
 	if cfg.Mode != modeLegacy && s.engine != nil && s.worker != nil && s.saveEnabled &&
 		previous.Optimizer == cfg.Optimizer && previous.StatePath == cfg.StatePath &&
 		previous.RecomputeEvery == cfg.RecomputeEvery && previous.CheckpointEvery == cfg.CheckpointEvery {
+		if previous.Mode != cfg.Mode || previous.AcrossPriorities != cfg.AcrossPriorities {
+			s.engine.StartEpoch(cfg.Mode, cfg.AcrossPriorities, cfg.RecomputeEvery, cfg.CheckpointEvery)
+		}
 		s.cfg = cfg
 		s.mu.Unlock()
 		return
@@ -194,6 +200,7 @@ func (s *scheduler) configure(cfg pluginConfig) {
 		// Preserve inaccessible state; only invalid content may be quarantined.
 		save = errors.Is(errLoad, optimizer.ErrCorruptState) && quarantineState(cfg.StatePath) == nil
 	}
+	engine.StartEpoch(cfg.Mode, cfg.AcrossPriorities, cfg.RecomputeEvery, cfg.CheckpointEvery)
 	s.mu.Lock()
 	s.cfg = cfg
 	s.engine = engine
