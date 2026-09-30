@@ -230,7 +230,7 @@ plugins:
       enabled: true
       priority: 100
       mode: shadow                # legacy | shadow | optimizer
-      state-path: /var/lib/cliproxy/tenancy-scheduler.json
+      state-path: /var/lib/cliproxyapi/tenancy-scheduler.json
       across-priorities: false
       optimizer:                  # all optional; defaults shown
         epsilon: 0.05             # tolerated overrun probability per known window
