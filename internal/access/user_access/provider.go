@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/access/keyextract"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/tenancy"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/access/keyextract"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tenancy"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 // ProviderName identifies tenant API key authentication results.

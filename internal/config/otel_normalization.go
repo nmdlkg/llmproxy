@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/otelusage/otelspec"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/otelusage/otelspec"
 )
 
 // SanitizeOTelConfig trims OTLP settings, applies safe defaults, and rejects

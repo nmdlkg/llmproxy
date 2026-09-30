@@ -2,6 +2,11 @@ package config
 
 import "fmt"
 
+// forkV8Roots lists fork-owned top-level sections. They keep the same location
+// in the legacy and v8 layouts, so v8 validation must accept them and v8
+// migration must not comment them out.
+var forkV8Roots = []string{"otel", "tenancy", "auto-routing", "openrouter"}
+
 // Fork configuration hooks. The upstream loaders (LoadConfigOptional and
 // ParseConfigBytes) call only these two functions so fork-owned sections can
 // evolve without touching upstream files.
