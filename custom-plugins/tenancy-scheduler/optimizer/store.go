@@ -22,18 +22,20 @@ var ErrCorruptState = errors.New("optimizer state is corrupt")
 // client API keys, or response headers; reservations are intentionally not
 // persisted because their attempts do not survive a reload.
 type persistedState struct {
-	Version     int                              `json:"version"`
-	SavedAt     time.Time                        `json:"saved_at"`
-	Windows     []*Window                        `json:"windows"`
-	Pooled      map[string]*ConsumptionEstimator `json:"pooled"`
-	Classes     map[string]*ClassStats           `json:"classes"`
-	Demand      map[string]*DemandForecast       `json:"demand"`
-	Health      map[string]*Health               `json:"health"`
-	AuthSeen    map[string]time.Time             `json:"auth_seen"`
-	Identities  map[string]string                `json:"identities"`
-	ScopedClass map[string]map[string]time.Time  `json:"scoped_classes,omitempty"`
-	Accounts    map[string]*AccountState         `json:"accounts"`
-	Shadow      ShadowStats                      `json:"shadow"`
+	Version          int                              `json:"version"`
+	SavedAt          time.Time                        `json:"saved_at"`
+	Windows          []*Window                        `json:"windows"`
+	Pooled           map[string]*ConsumptionEstimator `json:"pooled"`
+	Classes          map[string]*ClassStats           `json:"classes"`
+	Demand           map[string]*DemandForecast       `json:"demand"`
+	Health           map[string]*Health               `json:"health"`
+	AuthSeen         map[string]time.Time             `json:"auth_seen"`
+	Identities       map[string]string                `json:"identities"`
+	ScopedClass      map[string]map[string]time.Time  `json:"scoped_classes,omitempty"`
+	Accounts         map[string]*AccountState         `json:"accounts"`
+	Shadow           ShadowStats                      `json:"shadow"`
+	Telemetry        Telemetry                        `json:"telemetry"`
+	TelemetryHistory []Telemetry                      `json:"telemetry_history,omitempty"`
 	// Diagnostics is informational and ignored on load.
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 }
@@ -57,18 +59,21 @@ func (e *Engine) Save(path, mode string) error {
 		return nil
 	}
 	e.mu.Lock()
+	e.refreshFreshnessLocked(e.now())
 	state := persistedState{
-		Version:     StateVersion,
-		SavedAt:     e.now().UTC(),
-		Pooled:      e.pooled,
-		Classes:     e.classes,
-		Demand:      e.demand,
-		Health:      e.health,
-		AuthSeen:    e.authSeen,
-		Identities:  e.identities,
-		ScopedClass: e.scopedClass,
-		Accounts:    e.accounts,
-		Shadow:      e.shadow,
+		Version:          StateVersion,
+		SavedAt:          e.now().UTC(),
+		Pooled:           e.pooled,
+		Classes:          e.classes,
+		Demand:           e.demand,
+		Health:           e.health,
+		AuthSeen:         e.authSeen,
+		Identities:       e.identities,
+		ScopedClass:      e.scopedClass,
+		Accounts:         e.accounts,
+		Shadow:           e.shadow,
+		Telemetry:        e.telemetry,
+		TelemetryHistory: e.telemetryHistory,
 	}
 	for _, window := range e.windows {
 		state.Windows = append(state.Windows, window)
@@ -167,7 +172,24 @@ func (e *Engine) Load(path string) error {
 			account.Classes = make(map[string]time.Time)
 		}
 	}
-	e.shadow = state.Shadow
+	e.telemetryHistory = nil
+	for _, epoch := range state.TelemetryHistory {
+		if epoch.SchemaVersion == telemetrySchemaVersion {
+			epoch.normalize()
+			e.telemetryHistory = append(e.telemetryHistory, epoch)
+		}
+	}
+	if len(e.telemetryHistory) > maxTelemetryHistory {
+		e.telemetryHistory = e.telemetryHistory[len(e.telemetryHistory)-maxTelemetryHistory:]
+	}
+	// Reservation attribution is lost on restart. A new epoch prevents old
+	// counters from being mixed with attempts executed by the new instance.
+	e.telemetry = Telemetry{}
+	if state.Telemetry.SchemaVersion == telemetrySchemaVersion {
+		e.telemetry = state.Telemetry
+		e.telemetry.normalize()
+	}
+	e.rotateTelemetryLocked("", e.now())
 	e.pending = make(map[string]*pendingInterval)
 	e.reservations = make(map[string][]reservationGroup)
 	e.reserved = make(map[string]float64)

@@ -31,6 +31,9 @@ type Usage struct {
 	Generate    bool
 	Failed      bool
 	Latency     time.Duration
+	TTFT        time.Duration
+	StatusCode  int
+	RequestedAt time.Time
 	CompletedAt time.Time
 	Tokens      float64
 	Headers     http.Header
@@ -73,8 +76,9 @@ type reservationItem struct {
 }
 
 type reservationGroup struct {
-	at    time.Time
-	items []reservationItem
+	at      time.Time
+	items   []reservationItem
+	epochID string
 }
 
 // PriceSnapshot is the immutable output of one background valuation.
@@ -92,6 +96,8 @@ type ShadowStats struct {
 	Picks      uint64 `json:"picks"`
 	Agreements uint64 `json:"agreements"`
 	Fallbacks  uint64 `json:"inadmissible_fallbacks"`
+	Mode       string `json:"mode,omitempty"`
+	EpochID    string `json:"epoch_id,omitempty"`
 }
 
 // Decision is the optimizer choice for one request.
@@ -123,6 +129,8 @@ type Engine struct {
 	reserved         map[string]float64
 	lastReserveSweep time.Time
 	shadow           ShadowStats
+	telemetry        Telemetry
+	telemetryHistory []Telemetry
 	cursor           uint64
 
 	prices atomic.Pointer[PriceSnapshot]
@@ -149,7 +157,38 @@ func NewEngine(cfg Config, now func() time.Time) *Engine {
 		pending:      make(map[string]*pendingInterval),
 		reservations: make(map[string][]reservationGroup),
 		reserved:     make(map[string]float64),
+		telemetry:    newTelemetry("", now()),
 	}
+}
+
+func (e *Engine) rotateTelemetryLocked(mode string, now time.Time) {
+	if e.telemetry.EpochID != "" && e.telemetry.Mode != "" {
+		e.telemetryHistory = append(e.telemetryHistory, e.telemetry)
+		if len(e.telemetryHistory) > maxTelemetryHistory {
+			e.telemetryHistory = e.telemetryHistory[len(e.telemetryHistory)-maxTelemetryHistory:]
+		}
+	}
+	e.telemetry = newTelemetry(mode, now)
+	e.shadow = ShadowStats{Mode: mode, EpochID: e.telemetry.EpochID}
+}
+
+// TelemetrySnapshot returns a copy of the active mode-scoped counters.
+func (e *Engine) TelemetrySnapshot() Telemetry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.refreshFreshnessLocked(e.now())
+	return cloneTelemetry(e.telemetry)
+}
+
+// TelemetryHistory returns bounded completed epochs, oldest first.
+func (e *Engine) TelemetryHistory() []Telemetry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]Telemetry, len(e.telemetryHistory))
+	for i, epoch := range e.telemetryHistory {
+		out[i] = cloneTelemetry(epoch)
+	}
+	return out
 }
 
 // Config returns the active configuration.
@@ -210,7 +249,40 @@ func (e *Engine) RecordUsage(usage Usage) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.releaseLocked(usage.AuthID)
+	if e.telemetry.Mode == "" {
+		e.telemetry.Mode = "optimizer"
+	}
+	boundary := !usage.RequestedAt.IsZero() && usage.RequestedAt.Before(e.telemetry.StartedAt)
+	matched := false
+	groups := e.reservations[usage.AuthID]
+	// A completion known to precede this epoch must not release a newer
+	// reservation when its original reservation was lost on restart/expiry.
+	if !boundary || (len(groups) > 0 && groups[0].epochID != e.telemetry.EpochID) {
+		matched = e.releaseLocked(usage.AuthID)
+	}
+	if boundary {
+		e.telemetry.BoundaryUsage++
+	} else {
+		e.telemetry.UsageRecords++
+		if usage.Failed {
+			e.telemetry.UsageFailures++
+		} else {
+			e.telemetry.UsageSuccesses++
+		}
+		if usage.Failed && usage.StatusCode == http.StatusTooManyRequests {
+			e.telemetry.Usage429++
+		}
+		e.telemetry.Latency.observe(usage.Latency)
+		e.telemetry.TTFT.observe(usage.TTFT)
+		if len(ParseWindows(provider, usage.Headers, now)) > 0 {
+			e.telemetry.UsageWithQuota++
+		} else {
+			e.telemetry.UsageWithoutQuota++
+		}
+		if !matched {
+			e.telemetry.UnmatchedUsage++
+		}
+	}
 	authKey := hashAuthID(usage.AuthID)
 	health := e.health[authKey]
 	if health == nil {
@@ -362,23 +434,26 @@ func (e *Engine) removeWindowIndexLocked(key string, window WindowKey) {
 	}
 }
 
-func (e *Engine) releaseLocked(authID string) {
+func (e *Engine) releaseLocked(authID string) bool {
 	groups := e.reservations[authID]
 	if len(groups) == 0 {
-		return
+		return false
 	}
+	e.reservationRemovedLocked(groups[0], &e.telemetry.ReservationsReleased)
 	if len(groups) == 1 {
 		e.subtractReservationLocked(groups[0])
 		delete(e.reservations, authID)
-		return
+		return true
 	}
 	e.subtractReservationLocked(groups[0])
 	e.reservations[authID] = groups[1:]
+	return true
 }
 
 func (e *Engine) expireReservationsLocked(now time.Time) {
 	for authID, groups := range e.reservations {
 		for len(groups) > 0 && now.Sub(groups[0].at) >= e.cfg.ReservationTTL {
+			e.reservationRemovedLocked(groups[0], &e.telemetry.ReservationsExpired)
 			e.subtractReservationLocked(groups[0])
 			groups = groups[1:]
 		}
@@ -410,21 +485,22 @@ func (e *Engine) subtractReservationLocked(group reservationGroup) {
 
 func (e *Engine) invalidateGenerationReservationsLocked(key string, generation uint64) {
 	for authID, groups := range e.reservations {
-		for groupIndex := range groups {
-			items := groups[groupIndex].items[:0]
-			for _, item := range groups[groupIndex].items {
+		kept := groups[:0]
+		for _, group := range groups {
+			hadItems := len(group.items) > 0
+			items := group.items[:0]
+			for _, item := range group.items {
 				if item.key == key && item.generation == generation {
 					e.reserved[key] -= item.amount
 					continue
 				}
 				items = append(items, item)
 			}
-			groups[groupIndex].items = items
-		}
-		kept := groups[:0]
-		for _, group := range groups {
-			if len(group.items) > 0 {
+			group.items = items
+			if len(items) > 0 || !hadItems {
 				kept = append(kept, group)
+			} else {
+				e.reservationRemovedLocked(group, &e.telemetry.ReservationsInvalidated)
 			}
 		}
 		if len(kept) == 0 {
@@ -446,6 +522,7 @@ func (e *Engine) purgeResetReservationsLocked(now time.Time) {
 	for authID, groups := range e.reservations {
 		keptGroups := groups[:0]
 		for _, group := range groups {
+			hadItems := len(group.items) > 0
 			keptItems := group.items[:0]
 			for _, item := range group.items {
 				window := e.windows[item.key]
@@ -456,8 +533,10 @@ func (e *Engine) purgeResetReservationsLocked(now time.Time) {
 				keptItems = append(keptItems, item)
 			}
 			group.items = keptItems
-			if len(group.items) > 0 {
+			if len(group.items) > 0 || !hadItems {
 				keptGroups = append(keptGroups, group)
+			} else {
+				e.reservationRemovedLocked(group, &e.telemetry.ReservationsInvalidated)
 			}
 		}
 		if len(keptGroups) == 0 {
@@ -605,6 +684,13 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	now := e.now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	mode := "optimizer"
+	if executed != "" {
+		mode = "shadow"
+	}
+	if e.telemetry.Mode == "" {
+		e.rotateTelemetryLocked(mode, now)
+	}
 	e.observeCandidatesLocked(model, candidates, now)
 	e.expireReservationsLocked(now)
 	e.purgeResetReservationsLocked(now)
@@ -615,6 +701,7 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	results := make([]scored, 0, len(candidates))
 	maxKnownCost := 0.0
 	unknown := make([]int, 0)
+	staleWindow, unpriced := false, false
 	for _, candidate := range candidates {
 		account := accountOf(candidate)
 		provider := strings.ToLower(candidate.Provider)
@@ -632,6 +719,12 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 		for _, view := range views {
 			if !e.scopedWindowAppliesLocked(view.key, class) {
 				continue
+			}
+			staleWindow = staleWindow || view.stale
+			if snapshot == nil {
+				unpriced = true
+			} else if _, ok := snapshot.Prices[view.key]; !ok {
+				unpriced = true
 			}
 			mean, sd := e.consumptionLocked(view.window, view.capacity, class)
 			available := view.remaining - reserved[view.key]
@@ -665,15 +758,32 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	}
 
 	best := e.selectLocked(results)
+	e.telemetry.Decisions++
+	if len(unknown) > 0 {
+		e.telemetry.UnknownCandidateDecisions++
+	}
+	if staleWindow {
+		e.telemetry.StaleWindowDecisions++
+	}
+	if snapshot == nil || unpriced {
+		e.telemetry.UnpricedDecisions++
+	}
+	if snapshot != nil && now.Sub(snapshot.ComputedAt) > e.cfg.StaleAfter {
+		e.telemetry.StalePriceDecisions++
+	}
 	decision := Decision{AuthID: results[best].candidate.ID, Score: results[best].score, Admissible: results[best].admissible}
 	if !decision.Admissible {
-		e.shadow.Fallbacks++
+		e.telemetry.InadmissibleDecisions++
 	}
 	reserveIndex := best
 	if executed != "" {
 		e.shadow.Picks++
+		if !decision.Admissible {
+			e.shadow.Fallbacks++
+		}
 		if executed == decision.AuthID {
 			e.shadow.Agreements++
+			e.telemetry.Agreements++
 		}
 		reserveIndex = -1
 		for i := range results {
@@ -685,7 +795,8 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 	}
 	if reserveIndex >= 0 {
 		id := results[reserveIndex].candidate.ID
-		group := reservationGroup{at: now, items: results[reserveIndex].amounts}
+		group := reservationGroup{at: now, items: results[reserveIndex].amounts, epochID: e.telemetry.EpochID}
+		e.telemetry.ReservationsCreated++
 		e.reservations[id] = append(e.reservations[id], group)
 		for _, item := range group.items {
 			e.reserved[item.key] += item.amount
@@ -796,6 +907,7 @@ func (e *Engine) Prune() {
 					continue
 				}
 				for _, group := range groups {
+					e.reservationRemovedLocked(group, &e.telemetry.ReservationsPruned)
 					e.subtractReservationLocked(group)
 				}
 				delete(e.reservations, reservationAuthID)

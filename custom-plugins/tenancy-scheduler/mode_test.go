@@ -248,3 +248,44 @@ func TestUsageHandleJSONContract(t *testing.T) {
 		t.Fatal("recompute returned nil")
 	}
 }
+
+func TestReconfigurationScopesTelemetryEpochsAndPolicyFingerprint(t *testing.T) {
+	s := newModeScheduler(t, modeShadow, false)
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{candidate("a", 0, nil)}}
+	s.pick(req)
+	s.handleUsage(codexUsage("a", 10, 10))
+	initial := s.engine.TelemetrySnapshot()
+	engine := s.engine
+	cfg := s.cfg
+	cfg.Mode = modeOptimizer
+	s.configure(cfg)
+	current := s.engine.TelemetrySnapshot()
+	if s.engine != engine || current.EpochID == initial.EpochID || current.ConfigFingerprint != initial.ConfigFingerprint || current.Decisions != 0 || s.engine.Shadow().Picks != 0 {
+		t.Fatalf("mode reconfigure = %+v; prior = %+v", current, initial)
+	}
+	s.configure(cfg)
+	if s.engine.TelemetrySnapshot().EpochID != current.EpochID {
+		t.Fatal("identical registration must retain the current epoch")
+	}
+	cfg.AcrossPriorities = true
+	s.configure(cfg)
+	across := s.engine.TelemetrySnapshot()
+	if across.EpochID == current.EpochID || across.ConfigFingerprint == current.ConfigFingerprint {
+		t.Fatal("across-priorities change must rotate the epoch and policy fingerprint")
+	}
+	cfg.RecomputeEvery = 2 * time.Minute
+	s.configure(cfg)
+	cadence := s.engine.TelemetrySnapshot()
+	if cadence.EpochID == across.EpochID || cadence.ConfigFingerprint == across.ConfigFingerprint {
+		t.Fatal("recompute cadence change must rotate the epoch and policy fingerprint")
+	}
+	if cadence.KnownAccounts != 1 {
+		t.Fatal("reconfiguration discarded learned quota state")
+	}
+	s.shutdown()
+	s.configure(cfg)
+	restarted := s.engine.TelemetrySnapshot()
+	if restarted.EpochID == cadence.EpochID || restarted.ConfigFingerprint != cadence.ConfigFingerprint || restarted.Decisions != 0 {
+		t.Fatal("restart must rotate the epoch while preserving the policy fingerprint")
+	}
+}

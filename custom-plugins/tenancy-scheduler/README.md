@@ -206,6 +206,96 @@ committed instances).
 
 ## Build and enable
 
+### Measure shadow traffic and evaluate a canary
+
+The `shadow` counters describe decision similarity, not realized utility.
+For example, 156 agreements out of 998 picks is 15.6% agreement; three
+`inadmissible_fallbacks` means three optimizer decisions had no admissible
+candidate, not three host/plugin failures. `rollout_value` and
+`rollout_unserved` are simulated future outcomes. A reservation gauge of 64
+cannot identify orphaned work by itself. Do not use these values or `epsilon`
+as a promotion threshold.
+
+The `telemetry` section records a bounded measurement epoch: mode, configuration
+fingerprint, decision evidence, delivered usage outcomes, latency/TTFT
+histograms, and reservation lifecycle counts. Histograms have disjoint buckets
+and an overflow bucket; p95 in the report is a bucket upper bound, not an exact
+percentile. Usage records are not logical requests: retries and additional-model
+usage can emit multiple records. Reservation matching remains credential FIFO,
+so these counters diagnose reconciliation drift rather than prove exactly-once
+attempt accounting. No counter can reveal the outcome of an unchosen account.
+
+Collect start/end snapshots from the same epoch, without changing mode or
+reloading the plugin between them. Reload or a mode/configuration change starts
+a new epoch. Old state remains readable but old files without telemetry cannot
+serve as a measured baseline. Drain traffic across cohort changes to reduce
+cross-boundary in-flight usage; the current ABI cannot attribute that usage
+exactly. Save snapshots after checkpointing and check `saved_at`; copying the
+file does not force a new checkpoint.
+
+```sh
+cp /var/lib/cliproxyapi/tenancy-scheduler.json /tmp/shadow-start.json
+# After the observation interval and another checkpoint:
+cp /var/lib/cliproxyapi/tenancy-scheduler.json /tmp/shadow-end.json
+```
+
+Choose the interval and minimum samples based on traffic and the relevant reset
+periods, including weekly constraints. 998 picks alone cannot establish weekly
+behavior. Measure usage failures, exact 429 rates, latency, unknown/stale window
+decisions, price freshness, expired reservations, and unmatched usage. Record
+traffic mix, concurrency, account pool, reset phase, host version and balancing
+configuration alongside the snapshots. A quiet interval or different model mix
+does not provide a comparable baseline.
+
+Before canary traffic, define rollback tolerances from the observed baseline and
+the service's error budget. The gate JSON maps report rate names to permitted
+**absolute increases as fractions** (`failure`, `http_429`, `inadmissible`,
+`unknown_candidate`, `stale_window`, `unpriced`, `stale_price`,
+`unmatched_usage`). Both `failure` and `http_429` gates are required. Reservation
+expiry/creation counts are diagnostic-only because arbitrary intervals include
+old work and unfinished new work. For example, a tolerance of `0.001`
+permits an increase of 0.1 percentage points; this is a unit example, not a
+recommended production threshold. Set a separate latency/TTFT limit from the
+baseline histogram and service latency objective.
+
+Use isolated comparable account pools with one scheduling owner per OAuth pool.
+Two independent processes consuming the same pool cannot provide coordinated
+reservation accounting. A time-based shadow/canary comparison is possible but
+requires accounting for workload, external consumption, and reset-phase changes.
+Enable the controlled canary with `mode: optimizer` and
+`tenancy.balancing.disabled: true` together; the host balancing switch requires
+a restart. Capture canary start/end snapshots within its own epoch.
+
+```sh
+python3 custom-plugins/tenancy-scheduler/tools/rollout_report.py \
+  --baseline-start /tmp/shadow-start.json \
+  --baseline-end /tmp/shadow-end.json \
+  --canary-start /tmp/optimizer-start.json \
+  --canary-end /tmp/optimizer-end.json \
+  --min-samples "$MIN_SAMPLES" --gates /tmp/rollback-gates.json
+```
+
+The report computes interval differences, absolute rate deltas, Wilson intervals
+and conservative bounds for their differences. These intervals assume independent,
+comparable observations; burst correlation and workload changes reduce their
+validity. Missing data, epoch changes, counter rollback and insufficient samples
+produce `insufficient_evidence`. Different optimizer configuration fingerprints
+also prevent passing gates. A clear rate regression produces `rollback`;
+overlapping uncertainty produces `continue_measuring`. `rate_gates_passed` only
+means the supplied rate gates passed. Inspect latency/TTFT, attributable tenant
+outcomes and workload/reset evidence before deciding to expand traffic. The
+tool deliberately does not claim utility improvement or automatically promote
+a configuration. Reservation expirations may concern work created before the
+interval, so inspect the raw lifecycle counts rather than treating expiry/creation
+as a probability or a confidence interval.
+
+Rollback restores `mode: shadow` for continued measurements (or `legacy`/disabled
+plugin) and `tenancy.balancing.disabled: false` together, then restarts the host.
+Verify effective configuration, successful plugin loading, authoritative quota
+enforcement and request outcomes. Keep the old library/configuration available.
+Observe recovery before repeating a canary; do not remove the urgency seam until
+stability and rollback have been demonstrated operationally.
+
 Use a CGO-enabled Go 1.26+ toolchain and C compiler. From this directory:
 
 ```sh
@@ -230,7 +320,7 @@ plugins:
       enabled: true
       priority: 100
       mode: shadow                # legacy | shadow | optimizer
-      state-path: /var/lib/cliproxy/tenancy-scheduler.json
+      state-path: /var/lib/cliproxyapi/tenancy-scheduler.json
       across-priorities: false
       optimizer:                  # all optional; defaults shown
         epsilon: 0.05             # tolerated overrun probability per known window
