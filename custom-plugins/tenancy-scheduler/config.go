@@ -13,9 +13,10 @@ import (
 // executes legacy decisions while recording optimizer decisions; optimizer
 // executes optimizer decisions.
 const (
-	modeLegacy    = "legacy"
-	modeShadow    = "shadow"
-	modeOptimizer = "optimizer"
+	modeLegacy       = "legacy"
+	modeShadow       = "shadow"
+	modeOptimizer    = "optimizer"
+	modeClaudeSimple = "claude-simple"
 )
 
 type pluginConfig struct {
@@ -32,27 +33,28 @@ type rawConfig struct {
 	StatePath        string `yaml:"state-path"`
 	AcrossPriorities bool   `yaml:"across-priorities"`
 	Optimizer        struct {
-		RecomputeInterval      string   `yaml:"recompute-interval"`
-		CheckpointInterval     string   `yaml:"checkpoint-interval"`
-		Epsilon                *float64 `yaml:"epsilon"`
-		Scenarios              *int     `yaml:"scenarios"`
-		Step                   string   `yaml:"step"`
-		MaxHorizon             string   `yaml:"max-horizon"`
-		StaleAfter             string   `yaml:"stale-after"`
-		ReservationTTL         string   `yaml:"reservation-ttl"`
-		ActiveAccountWindow    string   `yaml:"active-account-window"`
-		AccountTTL             string   `yaml:"account-ttl"`
-		RequestValue           *float64 `yaml:"request-value"`
-		LambdaLatency          *float64 `yaml:"lambda-latency"`
-		LambdaFailure          *float64 `yaml:"lambda-failure"`
-		PerturbRequests        *float64 `yaml:"perturb-requests"`
-		PriorRequestsPerWindow *float64 `yaml:"prior-requests-per-window"`
-		DemandCV               *float64 `yaml:"demand-cv"`
-		ConsumptionCV          *float64 `yaml:"consumption-cv"`
-		DriftPerHour           *float64 `yaml:"drift-per-hour"`
-		TerminalValue          *float64 `yaml:"terminal-value"`
-		MaxWork                *float64 `yaml:"max-work"`
-		Seed                   *uint64  `yaml:"seed"`
+		RecomputeInterval         string   `yaml:"recompute-interval"`
+		CheckpointInterval        string   `yaml:"checkpoint-interval"`
+		Epsilon                   *float64 `yaml:"epsilon"`
+		Scenarios                 *int     `yaml:"scenarios"`
+		Step                      string   `yaml:"step"`
+		MaxHorizon                string   `yaml:"max-horizon"`
+		StaleAfter                string   `yaml:"stale-after"`
+		ReservationTTL            string   `yaml:"reservation-ttl"`
+		ActiveAccountWindow       string   `yaml:"active-account-window"`
+		AccountTTL                string   `yaml:"account-ttl"`
+		RequestValue              *float64 `yaml:"request-value"`
+		LambdaLatency             *float64 `yaml:"lambda-latency"`
+		LambdaFailure             *float64 `yaml:"lambda-failure"`
+		PerturbRequests           *float64 `yaml:"perturb-requests"`
+		PriorRequestsPerWindow    *float64 `yaml:"prior-requests-per-window"`
+		DemandCV                  *float64 `yaml:"demand-cv"`
+		ConsumptionCV             *float64 `yaml:"consumption-cv"`
+		DriftPerHour              *float64 `yaml:"drift-per-hour"`
+		TerminalValue             *float64 `yaml:"terminal-value"`
+		ClaudeWeeklySurplusWeight *float64 `yaml:"claude-weekly-surplus-weight"`
+		MaxWork                   *float64 `yaml:"max-work"`
+		Seed                      *uint64  `yaml:"seed"`
 	} `yaml:"optimizer"`
 }
 
@@ -77,7 +79,7 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 	}
 	switch mode := strings.ToLower(strings.TrimSpace(in.Mode)); mode {
 	case "":
-	case modeLegacy, modeShadow, modeOptimizer:
+	case modeLegacy, modeShadow, modeOptimizer, modeClaudeSimple:
 		cfg.Mode = mode
 	default:
 		return cfg, fmt.Errorf("tenancy-scheduler: unknown mode %q", in.Mode)
@@ -124,6 +126,7 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 		{in.Optimizer.ConsumptionCV, &o.ConsumptionCV},
 		{in.Optimizer.DriftPerHour, &o.DriftPerHour},
 		{in.Optimizer.TerminalValue, &o.TerminalValue},
+		{in.Optimizer.ClaudeWeeklySurplusWeight, &o.ClaudeWeeklySurplusWeight},
 		{in.Optimizer.MaxWork, &o.MaxWork},
 	}
 	for _, item := range floats {

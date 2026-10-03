@@ -105,6 +105,25 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 		}
 		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
 	}
+	if mode == modeClaudeSimple {
+		if len(legacyPool) == 0 {
+			return pluginapi.SchedulerPickResponse{Handled: false}
+		}
+		claudePool := make([]pluginapi.SchedulerAuthCandidate, 0, len(legacyPool))
+		for _, candidate := range legacyPool {
+			if strings.EqualFold(candidate.Provider, "claude") {
+				claudePool = append(claudePool, candidate)
+			}
+		}
+		if len(claudePool) == 0 {
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
+		}
+		decision := engine.Pick(req.Model, optimizerCandidates(claudePool), "")
+		if decision.AuthID == "" {
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
+		}
+		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: decision.AuthID}
+	}
 
 	optimizerPool := legacyPool
 	if across {
@@ -115,7 +134,30 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 			return pluginapi.SchedulerPickResponse{Handled: false}
 		}
 		legacyID := s.rotate(legacyPool)
-		engine.Pick(req.Model, optimizerCandidates(optimizerPool), legacyID)
+		// Shadow retains optimizer-vs-legacy telemetry. Claude requests use the
+		// optimizer's weekly-surplus decision for execution, while all other
+		// providers continue executing the legacy rotation choice.
+		if len(optimizerPool) > 0 {
+			hasClaude := false
+			for _, candidate := range legacyPool {
+				hasClaude = hasClaude || strings.EqualFold(candidate.Provider, "claude")
+			}
+			if hasClaude {
+				claudePool := make([]pluginapi.SchedulerAuthCandidate, 0, len(optimizerPool))
+				for _, candidate := range optimizerPool {
+					if strings.EqualFold(candidate.Provider, "claude") {
+						claudePool = append(claudePool, candidate)
+					}
+				}
+				if len(claudePool) > 0 {
+					actual := engine.PickShadow(req.Model, optimizerCandidates(claudePool), legacyID, "")
+					if actual.AuthID != "" {
+						return pluginapi.SchedulerPickResponse{Handled: true, AuthID: actual.AuthID}
+					}
+				}
+			}
+			engine.Pick(req.Model, optimizerCandidates(optimizerPool), legacyID)
+		}
 		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: legacyID}
 	}
 	if len(optimizerPool) == 0 {

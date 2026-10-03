@@ -43,6 +43,7 @@ highest-priority active scheduler plugin runs; scheduler plugins are not chained
 | `legacy` (default) | Sharing filter, then sorted-ID rotation | Off; no usage capability is registered |
 | `shadow` | Same as `legacy` | Observes usage, scores every pick, records agreement, reserves on the executed credential |
 | `optimizer` | Optimizer argmax among eligible candidates | On |
+| `claude-simple` | Claude weekly pacing; legacy rotation for other providers | On for Claude |
 
 Sharing policy applies in every mode: the optimizer only ranks shareable
 candidates. Invalid configuration fails plugin registration, so the host logs the
@@ -51,6 +52,14 @@ error and keeps its own selection instead of running an unintended policy.
 In `optimizer` mode set `tenancy.balancing.disabled: true` in the server
 configuration (restart required). Otherwise the host reset-window bonus moves
 credentials between priority tiers and competes with the optimizer.
+
+For a staged Claude rollout, set `optimizer.claude-weekly-surplus-weight` to a
+positive value. The optimizer adds a bonus proportional to the positive gap
+between an account's remaining `7d` allowance fraction and the fraction of the
+weekly period left. The default is `0` (disabled); stale or unknown windows do
+not receive a bonus. This setting is useful in `shadow` mode because the
+optimizer decision is recorded while legacy rotation remains the executed
+choice.
 
 ## Optimizer model
 
