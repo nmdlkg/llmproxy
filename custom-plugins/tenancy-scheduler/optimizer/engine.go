@@ -715,6 +715,10 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 		result := scored{candidate: candidate, admissible: true, margin: math.Inf(1)}
 		result.score = e.cfg.RequestValue*success - e.cfg.LambdaLatency*latency - e.cfg.LambdaFailure*(1-success)
 		views := e.accountWindowsLocked(account, provider, now)
+		if provider == "claude" && e.cfg.ClaudeWeeklySurplusWeight > 0 {
+			weight := claudeWeeklyWeight(e.weeklySurplusLocked(views, class, reserved, now), e.cfg.ClaudeWeeklySurplusWeight)
+			result.score += (weight - 1) * e.cfg.RequestValue
+		}
 		cost := 0.0
 		for _, view := range views {
 			if !e.scopedWindowAppliesLocked(view.key, class) {

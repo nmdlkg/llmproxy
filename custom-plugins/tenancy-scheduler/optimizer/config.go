@@ -43,6 +43,9 @@ type Config struct {
 	DriftPerHour float64
 	// TerminalValue values capacity beyond the horizon per request-equivalent.
 	TerminalValue float64
+	// ClaudeWeeklySurplusWeight enables simple weekly pacing for Claude when
+	// positive. Zero retains rollout pricing; one gives a maximum bonus of one.
+	ClaudeWeeklySurplusWeight float64
 	// MaxWork bounds rollout work per recompute (windows*scenarios*steps*accounts*classes).
 	MaxWork float64
 	// Seed makes rollouts reproducible.
@@ -52,25 +55,26 @@ type Config struct {
 // Defaults returns the documented default configuration.
 func Defaults() Config {
 	return Config{
-		Epsilon:                0.05,
-		Scenarios:              16,
-		Step:                   30 * time.Minute,
-		MaxHorizon:             8 * 24 * time.Hour,
-		StaleAfter:             30 * time.Minute,
-		ReservationTTL:         30 * time.Minute,
-		ActiveAccountWindow:    24 * time.Hour,
-		AccountTTL:             7 * 24 * time.Hour,
-		RequestValue:           1,
-		LambdaLatency:          0,
-		LambdaFailure:          0.5,
-		PerturbRequests:        5,
-		PriorRequestsPerWindow: 500,
-		DemandCV:               0.3,
-		ConsumptionCV:          0.2,
-		DriftPerHour:           0.005,
-		TerminalValue:          0.5,
-		MaxWork:                5e7,
-		Seed:                   1,
+		Epsilon:                   0.05,
+		Scenarios:                 16,
+		Step:                      30 * time.Minute,
+		MaxHorizon:                8 * 24 * time.Hour,
+		StaleAfter:                30 * time.Minute,
+		ReservationTTL:            30 * time.Minute,
+		ActiveAccountWindow:       24 * time.Hour,
+		AccountTTL:                7 * 24 * time.Hour,
+		RequestValue:              1,
+		LambdaLatency:             0,
+		LambdaFailure:             0.5,
+		PerturbRequests:           5,
+		PriorRequestsPerWindow:    500,
+		DemandCV:                  0.3,
+		ConsumptionCV:             0.2,
+		DriftPerHour:              0.005,
+		TerminalValue:             0.5,
+		ClaudeWeeklySurplusWeight: 0,
+		MaxWork:                   5e7,
+		Seed:                      1,
 	}
 }
 
@@ -90,6 +94,7 @@ func (c Config) Normalize() (Config, error) {
 		{"consumption-cv", c.ConsumptionCV},
 		{"drift-per-hour", c.DriftPerHour},
 		{"terminal-value", c.TerminalValue},
+		{"claude-weekly-surplus-weight", c.ClaudeWeeklySurplusWeight},
 		{"max-work", c.MaxWork},
 	} {
 		if math.IsNaN(field.value) || math.IsInf(field.value, 0) {
@@ -132,7 +137,7 @@ func (c Config) Normalize() (Config, error) {
 	if c.Seed == 0 {
 		c.Seed = d.Seed
 	}
-	if c.LambdaLatency < 0 || c.LambdaFailure < 0 || c.DemandCV < 0 || c.ConsumptionCV < 0 || c.DriftPerHour < 0 || c.TerminalValue < 0 {
+	if c.LambdaLatency < 0 || c.LambdaFailure < 0 || c.DemandCV < 0 || c.ConsumptionCV < 0 || c.DriftPerHour < 0 || c.TerminalValue < 0 || c.ClaudeWeeklySurplusWeight < 0 {
 		return c, fmt.Errorf("costs and uncertainty parameters must not be negative")
 	}
 	if c.Step > c.MaxHorizon {

@@ -105,6 +105,25 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 		}
 		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
 	}
+	if mode == modeClaudeSimple {
+		if len(legacyPool) == 0 {
+			return pluginapi.SchedulerPickResponse{Handled: false}
+		}
+		claudePool := make([]pluginapi.SchedulerAuthCandidate, 0, len(legacyPool))
+		for _, candidate := range legacyPool {
+			if strings.EqualFold(candidate.Provider, "claude") {
+				claudePool = append(claudePool, candidate)
+			}
+		}
+		if len(claudePool) == 0 {
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
+		}
+		decision := engine.Pick(req.Model, optimizerCandidates(claudePool), "")
+		if decision.AuthID == "" {
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
+		}
+		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: decision.AuthID}
+	}
 
 	optimizerPool := legacyPool
 	if across {
