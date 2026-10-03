@@ -678,6 +678,21 @@ type scored struct {
 // executed selects which credential is reserved: the optimizer choice when
 // empty, otherwise the given legacy choice (shadow mode).
 func (e *Engine) Pick(model string, candidates []Candidate, executed string) Decision {
+	return e.pick(model, candidates, executed, executed)
+}
+
+// PickShadow compares the optimizer decision with compared, while reserving
+// actual as the credential that will really execute the request. It is used
+// by staged policies that keep optimizer telemetry but execute a different
+// policy decision.
+func (e *Engine) PickShadow(model string, candidates []Candidate, compared, actual string) Decision {
+	if actual == "" {
+		actual = "__optimizer__"
+	}
+	return e.pick(model, candidates, compared, actual)
+}
+
+func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs string) Decision {
 	if len(candidates) == 0 {
 		return Decision{}
 	}
@@ -790,11 +805,18 @@ func (e *Engine) Pick(model string, candidates []Candidate, executed string) Dec
 			e.telemetry.Agreements++
 		}
 		reserveIndex = -1
-		for i := range results {
-			if results[i].candidate.ID == executed {
-				reserveIndex = i
-				break
+		if reserveAs == "__optimizer__" {
+			reserveIndex = best
+		} else if reserveAs != "" {
+			executed = reserveAs
+			for i := range results {
+				if results[i].candidate.ID == executed {
+					reserveIndex = i
+					break
+				}
 			}
+		} else {
+			reserveIndex = best
 		}
 	}
 	if reserveIndex >= 0 {
