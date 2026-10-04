@@ -167,11 +167,32 @@ Returns `limit`, `used`, `remaining`, `window` and the reset time.
 
 ### Keeping your credential healthy
 
-Nothing currently probes your provider token on a schedule, so an expired token
-is discovered the next time the pool happens to pick it. If a provider login of
-yours stops working, re-run the login for that provider (section 3). Checking
-`/user` after a provider-side password or session change is worth the ten
-seconds.
+OAuth credentials are refreshed automatically while the proxy is running, as
+long as the credential contains a valid `refresh_token`. The background
+refresh scheduler checks token expiry and refreshes credentials before they
+expire; a request that receives an authentication failure also gets one
+refresh-and-retry attempt. You do not normally need to refresh manually before
+expiry.
+
+Automatic refresh cannot recover a missing, revoked, or expired
+`refresh_token`. If refresh fails with an OAuth error such as `invalid_grant`,
+or the provider login stops working after a password or session change, re-run
+the login for that provider (section 3). API-key credentials are not OAuth
+credentials and are not refreshed by this mechanism.
+
+Implementation references in this repository:
+
+- `sdk/cliproxy/service_lifecycle.go:91-93` starts the core auth
+  auto-refresh loop when the service starts.
+- `sdk/cliproxy/auth/conductor_refresh.go:117-166` decides when a credential
+  is due for refresh based on its expiry and provider refresh lead time.
+- `sdk/cliproxy/auth/auto_refresh_loop.go:413-423` schedules the refresh at
+  the provider-specific lead time.
+- `sdk/cliproxy/auth/conductor_refresh.go:474-494` retries once after an
+  unauthorized response when a refresh credential exists.
+- `internal/runtime/executor/codex_executor_auth.go:17-55` and
+  `internal/runtime/executor/claude_executor_auth.go:149-180` show the
+  provider-specific OAuth token refresh implementations.
 
 ---
 
@@ -204,7 +225,7 @@ Thinking suffixes still work: `auto(high)`.
 | `404` on a credential | It is not yours, or it does not exist. These are deliberately indistinguishable. |
 | `/user` will not load | Tenancy may be disabled server-side, or you are outside the tailnet. |
 | Login says the callback failed | Expected for the dashboard flow — copy the full failed URL back into the dashboard. Or use the CLI flow instead. |
-| Your credential shows an auth failure | Your provider token expired. Re-run the login for that provider. |
+| Your credential shows an auth failure | Automatic refresh may have failed, or the provider token/refresh token was revoked. Re-run the login for that provider. |
 | `unknown provider for model X` | That model is not served by any credential in the pool right now. |
 
 ---

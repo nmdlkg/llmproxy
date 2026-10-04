@@ -16,6 +16,11 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
+## Default feature/fix workflow
+- Unless the user says otherwise, first fetch and fast-forward `origin/dev`, then create a new feature/fix branch from the updated `dev`.
+- Implement and verify the change on that branch, push it to `origin`, and open a pull request targeting `dev`.
+- Include any existing local changes in the requested branch/PR after preserving them safely; do not discard them.
+
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory
