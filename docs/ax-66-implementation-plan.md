@@ -6,7 +6,7 @@ Add a tenant-scoped weekly usage planning response that combines usage ledger ob
 
 ## Scope for AX-66
 
-Implementation order is fixed: collection and additive migration → tenant-safe aggregation → explicit deterministic baseline → read-only API → shadow adapter. The five implementation children are AX-71 (forecast), AX-72 (observation), AX-78 (pricing), AX-75 (shadow), and AX-74 (UI). AX-73, AX-76, AX-77, and AX-79 are deferred follow-ups.
+Implementation order is fixed: collection and additive migration → tenant-safe aggregation → explicit deterministic baseline → read-only API → shadow adapter. The two implementation children are AX-71 (observation, forecast, pricing API) and AX-75 (advisory capacity snapshot and planning UI). AX-79 is the single deferred follow-up for routing activation, entitlement authority, external integrations, pooling, and historical repricing.
 
 ### 1. Canonical observation
 
@@ -119,8 +119,6 @@ The following are intentionally outside AX-66 and require a separate design or c
 
 ## Proposed follow-up sub-issues
 
-- **Forecast engine and confidence intervals**: implement deterministic EWMA, fallback, interval widening, and clock-controlled unit tests.
-- **Provider/auth/plan/model observation API**: add canonical aggregation, quota-scope deduplication, and ownership isolation.
-- **Versioned pricing provenance**: expose catalog version, effective date, missing-price status, and token-category calculations.
-- **Shadow capacity snapshot and advisory report**: connect forecast output to AX-7/AX-65 shadow telemetry without changing routing.
-- **Planning UI drill-down**: render provider → plan → credential → model-family weekly planning details and warnings.
+- **AX-71 — usage observation, forecast, and pricing API**: implement additive observation storage, canonical aggregation, deterministic forecast, and versioned price provenance.
+- **AX-75 — advisory capacity snapshot and planning UI**: expose bounded drill-down output and connect it to AX-7/AX-65 shadow telemetry without changing routing.
+- **AX-79 — deferred routing and entitlement follow-ups**: keep automatic routing activation, authoritative subscription entitlements, external integrations, cross-tenant pooling, and historical repricing out of AX-66.
