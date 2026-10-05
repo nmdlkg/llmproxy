@@ -146,6 +146,7 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine, authMiddleware gin.HandlerF
 		group.GET("/usage/releases", h.GetUsageReleases)
 		group.GET("/provider-quotas", h.GetProviderQuotas)
 		group.GET("/usage/capacity", h.GetCapacityPlan)
+		group.GET("/capacity", h.GetCapacityPlan)
 		group.GET("/api-keys", h.ListAPIKeys)
 		group.POST("/api-keys", h.RegisterAPIKeyHash)
 		group.DELETE("/api-keys", h.DeleteAPIKey)
