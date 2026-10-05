@@ -166,6 +166,9 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			cost_nano_usd INTEGER NOT NULL,
 			input_tokens INTEGER NOT NULL,
 			output_tokens INTEGER NOT NULL,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
 			failed INTEGER NOT NULL,
 			occurred_at INTEGER NOT NULL
 		)`,
@@ -225,6 +228,17 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("tenancy sqlite: migrate API key schema: %w", errExec)
 		}
 	}
+	for _, column := range []string{"reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"} {
+		var present int
+		if errScan := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM pragma_table_info('usage_ledger') WHERE name = ?`, column).Scan(&present); errScan != nil {
+			return fmt.Errorf("tenancy sqlite: inspect usage ledger schema: %w", errScan)
+		}
+		if present == 0 {
+			if _, errExec := tx.ExecContext(ctx, `ALTER TABLE usage_ledger ADD COLUMN `+column+` INTEGER NOT NULL DEFAULT 0`); errExec != nil {
+				return fmt.Errorf("tenancy sqlite: migrate usage ledger %s: %w", column, errExec)
+			}
+		}
+	}
 	if _, errExec := tx.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_user_api_keys_created_by_time
 		ON user_api_keys(created_by, created_at)
@@ -252,8 +266,9 @@ func (s *SQLiteStore) AppendUsage(ctx context.Context, entries []UsageEntry) err
 	statement, errPrepare := tx.PrepareContext(ctx, `
 		INSERT INTO usage_ledger (
 			user_id, auth_id, provider, model, cost_nano_usd,
-			input_tokens, output_tokens, failed, occurred_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
+			cache_creation_tokens, failed, occurred_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if errPrepare != nil {
 		return fmt.Errorf("tenancy sqlite: prepare usage append: %w", errPrepare)
@@ -275,6 +290,9 @@ func (s *SQLiteStore) AppendUsage(ctx context.Context, entries []UsageEntry) err
 			entry.CostNanoUSD,
 			entry.InputTokens,
 			entry.OutputTokens,
+			entry.ReasoningTokens,
+			entry.CacheReadTokens,
+			entry.CacheCreationTokens,
 			boolInt(entry.Failed),
 			timeValue(occurredAt),
 		); errExec != nil {

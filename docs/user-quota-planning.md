@@ -9,6 +9,10 @@ The user dashboard now consumes two authenticated endpoints:
 
 - `/v0/user/usage/timeline?resolution=1h&days=7`: past hourly usage.
 - `/v0/user/usage/releases?resolution=1h&hours=48`: scheduled expiration amounts.
+- `/v0/user/usage/forecast`: a bounded seven-day advisory forecast with
+  provider/credential/model drill-down and redacted credential handles.
+- `/v0/user/usage/capacity`: an advisory provider-window capacity snapshot for
+  the planning panel. It never changes routing eligibility.
 
 Both support paired RFC3339 `from` and `to` timestamps and `resolution=15m`
 for detail ranges up to 24 hours. Hourly ranges are limited to seven days.
@@ -41,6 +45,13 @@ as `clamp(limit - used + cumulative releases, 0, limit)`, assuming no new usage
 or limit changes. This preserves over-limit debt and avoids mixing cached
 release amounts with a newer remaining balance. Forecasts are estimates based
 on recorded usage, not reservations or guarantees of provider capacity.
+
+Forecast responses use a deterministic EWMA (`ewma-v1`, hourly buckets, alpha
+0.3) and expose explicit confidence, coverage, reason codes, and lower/upper
+heuristic bounds. Missing observations or non-authoritative provider-native
+quota units remain null/unknown rather than being converted to token limits.
+API price equivalents include a content-derived catalog version and return null
+when any required token category is unpriced.
 
 Quota responses add `mode: rolling` and nullable `next_release_at`. The legacy
 `reset_at` is retained as the next ledger expiration alias; it is null without
