@@ -45,12 +45,14 @@ type APIKey struct {
 
 // UsageEntry is one append-only usage ledger row.
 type UsageEntry struct {
-	ID           int64
-	UserID       string
-	AuthID       string
-	Provider     string
-	Model        string
-	CostNanoUSD  int64
+	ID          int64
+	UserID      string
+	AuthID      string
+	Provider    string
+	Model       string
+	CostNanoUSD int64
+	// InputTokens and OutputTokens are canonical, non-overlapping totals from
+	// usage.TokenBreakdown (including Claude cache input buckets).
 	InputTokens  int64
 	OutputTokens int64
 	Failed       bool

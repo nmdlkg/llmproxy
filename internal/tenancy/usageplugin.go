@@ -114,14 +114,31 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 	if hasUnpricedUsage(record, pricing) {
 		p.noteUnpricedModel(record.Model)
 	}
+	detail := usage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
+	breakdown := detail.TokenBreakdown
+	inputTokens := breakdown.Input.TotalTokens
+	outputTokens := breakdown.Output.TotalTokens
+	// Unknown/custom providers may not have a v2 semantic mapping. Preserve
+	// their legacy fields instead of turning an unclassified breakdown into
+	// zeroes in the dashboard.
+	if inputTokens == 0 && detail.InputTokens > 0 {
+		inputTokens = detail.InputTokens
+	}
+	if outputTokens == 0 && detail.OutputTokens > 0 {
+		outputTokens = detail.OutputTokens
+	}
 	entry := UsageEntry{
-		UserID:       user.ID,
-		AuthID:       record.AuthID,
-		Provider:     strings.ToLower(strings.TrimSpace(record.Provider)),
-		Model:        record.Model,
-		CostNanoUSD:  CalculateWeightedTokens(record, pricing),
-		InputTokens:  record.Detail.InputTokens,
-		OutputTokens: record.Detail.OutputTokens,
+		UserID:      user.ID,
+		AuthID:      record.AuthID,
+		Provider:    strings.ToLower(strings.TrimSpace(record.Provider)),
+		Model:       record.Model,
+		CostNanoUSD: CalculateWeightedTokens(record, pricing),
+		// Persist canonical totals for the dashboard. Claude's input_tokens
+		// excludes cache reads/creation, while the v2 input total includes all
+		// billable input buckets; using the raw field makes cached Claude usage
+		// disappear from the model token mix.
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
 		Failed:       record.Failed,
 		OccurredAt:   occurredAt,
 	}
