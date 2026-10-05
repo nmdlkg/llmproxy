@@ -53,10 +53,13 @@ type UsageEntry struct {
 	CostNanoUSD int64
 	// InputTokens and OutputTokens are canonical, non-overlapping totals from
 	// usage.TokenBreakdown (including Claude cache input buckets).
-	InputTokens  int64
-	OutputTokens int64
-	Failed       bool
-	OccurredAt   time.Time
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	Failed              bool
+	OccurredAt          time.Time
 }
 
 // QuotaWindow is the latest provider quota window observed for an auth.
@@ -121,6 +124,28 @@ type UsageBucketStat struct {
 	InputTokens  int64
 	OutputTokens int64
 	Attempts     int64
+}
+
+// UsageForecastStat is a bounded, tenant-scoped projection used by the
+// planning API. Plan and model family remain unknown when the ledger did not
+// capture them; callers must not infer them from credential filenames.
+type UsageForecastStat struct {
+	Provider            string
+	AuthID              string
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CacheReadTokens     int64
+	CacheCreationTokens int64
+	Attempts            int64
+	FailedAttempts      int64
+}
+
+// ForecastStore is an optional extension implemented by stores that support
+// the provider/auth/model forecast projection.
+type ForecastStore interface {
+	UsageForecast(context.Context, string, time.Time, time.Time, int) ([]UsageForecastStat, error)
 }
 
 // UsageUserStat aggregates one user's ledger rows over a window for admin views.

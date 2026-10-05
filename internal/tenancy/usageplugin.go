@@ -137,10 +137,13 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 		// excludes cache reads/creation, while the v2 input total includes all
 		// billable input buckets; using the raw field makes cached Claude usage
 		// disappear from the model token mix.
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		Failed:       record.Failed,
-		OccurredAt:   occurredAt,
+		InputTokens:         inputTokens,
+		OutputTokens:        outputTokens,
+		ReasoningTokens:     breakdown.Output.ReasoningTokens,
+		CacheReadTokens:     breakdown.Input.CacheReadTokens,
+		CacheCreationTokens: breakdown.Input.CacheWriteTokens,
+		Failed:              record.Failed,
+		OccurredAt:          occurredAt,
 	}
 	if batch := p.enqueue(entry); len(batch) > 0 {
 		p.warnUnpricedModels()

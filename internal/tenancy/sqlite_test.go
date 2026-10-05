@@ -78,7 +78,7 @@ func TestSQLiteSchemaIsIdempotent(t *testing.T) {
 		},
 		"usage_ledger": {
 			"id", "user_id", "auth_id", "provider", "model", "cost_nano_usd",
-			"input_tokens", "output_tokens", "failed", "occurred_at",
+			"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "failed", "occurred_at",
 		},
 		"quota_windows": {
 			"auth_id", "provider", "window_start", "window_end",
