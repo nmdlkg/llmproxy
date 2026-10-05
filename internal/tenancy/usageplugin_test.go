@@ -255,6 +255,55 @@ func TestUsagePluginLedgerAndConfiguredWindowFallback(t *testing.T) {
 	}
 }
 
+func TestUsagePluginPersistsClaudeCacheTokensInInputTotal(t *testing.T) {
+	store := newTestStore(t)
+	user := &User{ID: "user-claude", Email: "claude@example.com", Role: RoleUser, Tier: "default"}
+	if errCreate := store.CreateUser(user); errCreate != nil {
+		t.Fatalf("CreateUser() error = %v", errCreate)
+	}
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	plugin := NewUsagePlugin(store, config.TenancyConfig{}, func(context.Context, usage.Record) (*User, error) {
+		return user, nil
+	})
+	plugin.now = func() time.Time { return now }
+	t.Cleanup(func() {
+		if errClose := plugin.Close(); errClose != nil {
+			t.Errorf("UsagePlugin.Close() error = %v", errClose)
+		}
+	})
+
+	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-4-6"} {
+		plugin.HandleUsage(context.Background(), usage.Record{
+			Provider:    "claude",
+			Model:       model,
+			AuthID:      "auth-claude",
+			RequestedAt: now,
+			Detail: usage.Detail{
+				InputTokens:         2,
+				CacheReadTokens:     44_225,
+				CacheCreationTokens: 831,
+				OutputTokens:        244,
+				TotalTokens:         45_302,
+			},
+		})
+	}
+	if errFlush := plugin.Flush(context.Background()); errFlush != nil {
+		t.Fatalf("UsagePlugin.Flush() error = %v", errFlush)
+	}
+	rows, errRows := store.UsageByModel(context.Background(), user.ID, now.Add(-time.Minute), now.Add(time.Minute))
+	if errRows != nil {
+		t.Fatalf("UsageByModel() error = %v", errRows)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("UsageByModel() rows = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.InputTokens != 45_058 || row.OutputTokens != 244 {
+			t.Fatalf("Claude %s token totals = %d/%d, want 45058/244", row.Model, row.InputTokens, row.OutputTokens)
+		}
+	}
+}
+
 func TestCaptureQuotaWindowPrefersCodexHeaderWindow(t *testing.T) {
 	store := newTestStore(t)
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
