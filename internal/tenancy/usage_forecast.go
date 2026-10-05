@@ -20,7 +20,7 @@ func (s *SQLiteStore) UsageForecast(ctx context.Context, userID string, since, u
 		limit = 512
 	}
 	rows, errQuery := s.db.QueryContext(ctx, `
-		SELECT provider, auth_id, model,
+	SELECT provider, auth_id, model, plan, model_family, quota_scope,
 	       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 	       COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
         COUNT(*), COALESCE(SUM(failed), 0)
@@ -36,7 +36,7 @@ func (s *SQLiteStore) UsageForecast(ctx context.Context, userID string, since, u
 	stats := make([]UsageForecastStat, 0)
 	for rows.Next() {
 		var stat UsageForecastStat
-		if errScan := rows.Scan(&stat.Provider, &stat.AuthID, &stat.Model, &stat.InputTokens, &stat.OutputTokens, &stat.ReasoningTokens, &stat.CacheReadTokens, &stat.CacheCreationTokens, &stat.Attempts, &stat.FailedAttempts); errScan != nil {
+		if errScan := rows.Scan(&stat.Provider, &stat.AuthID, &stat.Model, &stat.Plan, &stat.ModelFamily, &stat.QuotaScope, &stat.InputTokens, &stat.OutputTokens, &stat.ReasoningTokens, &stat.CacheReadTokens, &stat.CacheCreationTokens, &stat.Attempts, &stat.FailedAttempts); errScan != nil {
 			return nil, fmt.Errorf("tenancy sqlite: scan usage forecast: %w", errScan)
 		}
 		stats = append(stats, stat)

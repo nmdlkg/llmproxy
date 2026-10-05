@@ -132,6 +132,11 @@ func (p *UsagePlugin) HandleUsage(ctx context.Context, record usage.Record) {
 		AuthID:      record.AuthID,
 		Provider:    strings.ToLower(strings.TrimSpace(record.Provider)),
 		Model:       record.Model,
+		Plan:        "unknown",
+		ModelFamily: modelFamily(record.Model),
+		QuotaScope:  "unknown",
+		Source:      "usage_record",
+		ObservedAt:  occurredAt,
 		CostNanoUSD: CalculateWeightedTokens(record, pricing),
 		// Persist canonical totals for the dashboard. Claude's input_tokens
 		// excludes cache reads/creation, while the v2 input total includes all
@@ -251,6 +256,20 @@ func ModelPricingFor(model string, cfg config.TenancyConfig) openrouter.ModelPri
 		}
 	}
 	return pricing
+}
+
+func modelFamily(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "unknown"
+	}
+	if slash := strings.LastIndex(model, "/"); slash >= 0 && slash+1 < len(model) {
+		model = model[slash+1:]
+	}
+	if colon := strings.IndexByte(model, ':'); colon > 0 {
+		model = model[:colon]
+	}
+	return model
 }
 
 func applyModelPriceOverride(pricing *openrouter.ModelPricing, override config.ModelPriceOverride, overwrite bool) {

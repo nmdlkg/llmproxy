@@ -57,6 +57,7 @@ func TestSQLiteSchemaIsIdempotent(t *testing.T) {
 	want := []string{
 		"api_key_registration_attempts",
 		"credential_validation",
+		"quota_observations",
 		"quota_windows",
 		"usage_ledger",
 		"user_api_keys",
@@ -77,12 +78,15 @@ func TestSQLiteSchemaIsIdempotent(t *testing.T) {
 			"key_hash", "user_id", "created_by", "label", "created_at", "last_used_at", "revoked_at",
 		},
 		"usage_ledger": {
-			"id", "user_id", "auth_id", "provider", "model", "cost_nano_usd",
+			"id", "user_id", "auth_id", "provider", "model", "plan", "model_family", "quota_scope", "source", "observed_at", "cost_nano_usd",
 			"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "failed", "occurred_at",
 		},
 		"quota_windows": {
 			"auth_id", "provider", "window_start", "window_end",
 			"used_units", "limit_units", "source", "updated_at",
+		},
+		"quota_observations": {
+			"id", "canonical_auth_id", "auth_id", "provider", "plan", "model_family", "quota_scope", "window_kind", "native_unit", "used_units", "limit_units", "remaining_value", "observed_at", "reset_at", "authority", "source",
 		},
 		"credential_validation": {
 			"auth_id", "user_id", "last_attempt_at", "last_ok_at", "last_status",
