@@ -163,6 +163,11 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			auth_id TEXT NOT NULL,
 			provider TEXT NOT NULL,
 			model TEXT NOT NULL,
+			plan TEXT NOT NULL DEFAULT '',
+			model_family TEXT NOT NULL DEFAULT '',
+			quota_scope TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT '',
+			observed_at INTEGER,
 			cost_nano_usd INTEGER NOT NULL,
 			input_tokens INTEGER NOT NULL,
 			output_tokens INTEGER NOT NULL,
@@ -182,6 +187,25 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			source TEXT NOT NULL,
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (auth_id, provider)
+		)`,
+		`CREATE TABLE IF NOT EXISTS quota_observations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			canonical_auth_id TEXT NOT NULL,
+			auth_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			plan TEXT NOT NULL DEFAULT '',
+			model_family TEXT NOT NULL DEFAULT '',
+			quota_scope TEXT NOT NULL,
+			window_kind TEXT NOT NULL,
+			native_unit TEXT NOT NULL,
+			used_units INTEGER NOT NULL DEFAULT 0,
+			limit_units INTEGER NOT NULL DEFAULT 0,
+			remaining_value REAL,
+			observed_at INTEGER NOT NULL,
+			reset_at INTEGER,
+			authority TEXT NOT NULL DEFAULT 'unknown',
+			source TEXT NOT NULL DEFAULT '',
+			UNIQUE(canonical_auth_id, quota_scope, window_kind, observed_at)
 		)`,
 		`CREATE TABLE IF NOT EXISTS credential_validation (
 			auth_id TEXT PRIMARY KEY,
@@ -228,7 +252,7 @@ func (s *SQLiteStore) EnsureSchema(ctx context.Context) error {
 			return fmt.Errorf("tenancy sqlite: migrate API key schema: %w", errExec)
 		}
 	}
-	for _, column := range []string{"reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"} {
+	for _, column := range []string{"plan", "model_family", "quota_scope", "source", "observed_at", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"} {
 		var present int
 		if errScan := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM pragma_table_info('usage_ledger') WHERE name = ?`, column).Scan(&present); errScan != nil {
 			return fmt.Errorf("tenancy sqlite: inspect usage ledger schema: %w", errScan)
@@ -266,9 +290,10 @@ func (s *SQLiteStore) AppendUsage(ctx context.Context, entries []UsageEntry) err
 	statement, errPrepare := tx.PrepareContext(ctx, `
 		INSERT INTO usage_ledger (
 			user_id, auth_id, provider, model, cost_nano_usd,
+			plan, model_family, quota_scope, source, observed_at,
 			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
 			cache_creation_tokens, failed, occurred_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if errPrepare != nil {
 		return fmt.Errorf("tenancy sqlite: prepare usage append: %w", errPrepare)
@@ -288,6 +313,11 @@ func (s *SQLiteStore) AppendUsage(ctx context.Context, entries []UsageEntry) err
 			strings.ToLower(strings.TrimSpace(entry.Provider)),
 			entry.Model,
 			entry.CostNanoUSD,
+			entry.Plan,
+			entry.ModelFamily,
+			entry.QuotaScope,
+			entry.Source,
+			timeValue(entry.ObservedAt),
 			entry.InputTokens,
 			entry.OutputTokens,
 			entry.ReasoningTokens,

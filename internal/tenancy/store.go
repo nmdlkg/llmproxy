@@ -3,6 +3,7 @@ package tenancy
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,11 @@ type UsageEntry struct {
 	AuthID      string
 	Provider    string
 	Model       string
+	Plan        string
+	ModelFamily string
+	QuotaScope  string
+	Source      string
+	ObservedAt  time.Time
 	CostNanoUSD int64
 	// InputTokens and OutputTokens are canonical, non-overlapping totals from
 	// usage.TokenBreakdown (including Claude cache input buckets).
@@ -72,6 +78,35 @@ type QuotaWindow struct {
 	LimitUnits  int64
 	Source      string
 	UpdatedAt   time.Time
+}
+
+// QuotaObservation is an append-only, multi-window provider observation. It
+// keeps native units separate from token usage and never changes quota_windows'
+// latest-snapshot meaning.
+type QuotaObservation struct {
+	CanonicalAuthID string
+	AuthID          string
+	Provider        string
+	Plan            string
+	ModelFamily     string
+	QuotaScope      string
+	WindowKind      string
+	NativeUnit      string
+	UsedUnits       int64
+	LimitUnits      int64
+	RemainingValue  *float64
+	ObservedAt      time.Time
+	ResetAt         *time.Time
+	Authority       string
+	Source          string
+}
+
+const CanonicalIdentityVersion = "canonical-v1"
+
+// CanonicalAuthID applies the versioned, conservative identity normalizer.
+// Provider aliases are not merged because ownership cannot be inferred safely.
+func CanonicalAuthID(provider, authID string) string {
+	return strings.ToLower(strings.TrimSpace(provider)) + ":" + strings.TrimSpace(authID)
 }
 
 // CredentialValidation tracks the most recent real-traffic validation result
@@ -133,6 +168,9 @@ type UsageForecastStat struct {
 	Provider            string
 	AuthID              string
 	Model               string
+	Plan                string
+	ModelFamily         string
+	QuotaScope          string
 	InputTokens         int64
 	OutputTokens        int64
 	ReasoningTokens     int64
@@ -188,6 +226,7 @@ type Store interface {
 
 	UpsertQuotaWindow(ctx context.Context, window QuotaWindow) error
 	ListQuotaWindows(ctx context.Context) ([]QuotaWindow, error)
+	AppendQuotaObservation(ctx context.Context, observation QuotaObservation) error
 
 	UpsertCredentialValidation(ctx context.Context, validation CredentialValidation) error
 	GetCredentialValidation(ctx context.Context, authID string) (*CredentialValidation, error)

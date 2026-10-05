@@ -67,7 +67,7 @@ func (h *Handler) GetUsageForecast(c *gin.Context) {
 			status = "partial"
 		}
 		items = append(items, gin.H{
-			"provider": row.Provider, "plan": nil, "credential": redactedCredentialHandle(user.ID, row.AuthID), "model_family": modelFamily(row.Model),
+			"provider": row.Provider, "plan": unknownString(row.Plan), "credential": redactedCredentialHandle(user.ID, row.AuthID), "model_family": unknownString(row.ModelFamily),
 			"model": row.Model, "input_tokens": row.InputTokens, "output_tokens": row.OutputTokens, "reasoning_tokens": row.ReasoningTokens, "cache_read_tokens": row.CacheReadTokens, "cache_creation_tokens": row.CacheCreationTokens, "attempts": row.Attempts, "failed_attempts": row.FailedAttempts,
 			"api_price_equivalent_nano_usd": apiEquivalent(row, pricing), "price_status": status, "price_catalog_version": version, "price_effective_at": now,
 		})
@@ -83,6 +83,13 @@ func (h *Handler) GetUsageForecast(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, payload)
+}
+
+func unknownString(value string) any {
+	if strings.TrimSpace(value) == "" || strings.EqualFold(strings.TrimSpace(value), "unknown") {
+		return nil
+	}
+	return value
 }
 
 func durationSeconds(value *time.Duration) any {
