@@ -2,11 +2,11 @@ package main
 
 import (
 	"errors"
+	"math"
 	"os"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"cliproxy-tenancy-scheduler/optimizer"
@@ -16,9 +16,10 @@ import (
 var sharedScheduler scheduler
 
 // scheduler applies the sharing policy, then selects with the configured mode.
-// A single legacy cursor avoids retaining unbounded state for client models.
+// A single smooth weighted rotation shared by every pool avoids retaining
+// unbounded state for client models.
 type scheduler struct {
-	cursor atomic.Uint64
+	wrr smoothWeighted
 
 	lifecycleMu sync.Mutex
 	saveMu      sync.Mutex
@@ -42,6 +43,53 @@ func shareable(candidate pluginapi.SchedulerAuthCandidate) bool {
 	}
 	owner, _ := candidate.Metadata["owner_user_id"].(string)
 	return strings.TrimSpace(owner) == ""
+}
+
+// schedulerWeight mirrors the host credential weight: absent or empty means 1,
+// non-positive values disable the credential, and invalid values (which the
+// host rejects at registration) are treated as disabled.
+func schedulerWeight(candidate pluginapi.SchedulerAuthCandidate) int64 {
+	if raw, ok := candidate.Attributes["weight"]; ok && strings.TrimSpace(raw) != "" {
+		return parseWeight(raw)
+	}
+	raw, ok := candidate.Metadata["weight"]
+	if !ok {
+		return 1
+	}
+	switch value := raw.(type) {
+	case int:
+		return clampWeight(int64(value))
+	case int64:
+		return clampWeight(value)
+	case float64:
+		if value == math.Trunc(value) && value <= maxWeight {
+			return clampWeight(int64(value))
+		}
+	case string:
+		if strings.TrimSpace(value) == "" {
+			return 1
+		}
+		return parseWeight(value)
+	}
+	return 0
+}
+
+// maxWeight matches the host credential weight bound.
+const maxWeight = 1_000_000
+
+func parseWeight(raw string) int64 {
+	weight, errParse := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if errParse != nil {
+		return 0
+	}
+	return clampWeight(weight)
+}
+
+func clampWeight(weight int64) int64 {
+	if weight <= 0 || weight > maxWeight {
+		return 0
+	}
+	return weight
 }
 
 // highestTier restricts eligible candidates to the highest priority among all
@@ -68,25 +116,54 @@ func (s *scheduler) rotate(eligible []pluginapi.SchedulerAuthCandidate) string {
 	if len(eligible) == 0 {
 		return ""
 	}
-	sorted := append([]pluginapi.SchedulerAuthCandidate(nil), eligible...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-	index := (s.cursor.Add(1) - 1) % uint64(len(sorted))
-	return sorted[index].ID
+	return s.wrr.pick(eligible)
 }
 
 func optimizerCandidates(eligible []pluginapi.SchedulerAuthCandidate) []optimizer.Candidate {
 	out := make([]optimizer.Candidate, 0, len(eligible))
 	for _, candidate := range eligible {
 		account, _ := candidate.Metadata["account_identity"].(string)
-		out = append(out, optimizer.Candidate{ID: candidate.ID, Provider: candidate.Provider, Account: account})
+		out = append(out, optimizer.Candidate{ID: candidate.ID, Provider: candidate.Provider, Account: account, Weight: schedulerWeight(candidate)})
 	}
 	return out
 }
 
+// fallback handles a request the sharing policy cannot serve. Without disabled
+// candidates the host fallback is preserved (best-effort sharing policy). The
+// host only excludes weight-0 credentials in weighted-round-robin, so when any
+// are present the plugin serves the fallback itself from the highest tier of
+// the remaining candidates, matching host weighted semantics.
+func (s *scheduler) fallback(active []pluginapi.SchedulerAuthCandidate, disabled bool) pluginapi.SchedulerPickResponse {
+	if !disabled {
+		return pluginapi.SchedulerPickResponse{Handled: false}
+	}
+	if pool := highestTier(active, active); len(pool) > 0 {
+		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(pool)}
+	}
+	return pluginapi.SchedulerPickResponse{
+		Handled:      true,
+		Reject:       true,
+		RejectCode:   "auth_unavailable",
+		RejectReason: "all candidate credentials have a non-positive scheduling weight",
+	}
+}
+
 func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.SchedulerPickResponse {
+	// Weight-0 credentials are excluded before tiers are computed, as the host
+	// weighted scheduler does.
+	active := make([]pluginapi.SchedulerAuthCandidate, 0, len(req.Candidates))
 	eligible := make([]pluginapi.SchedulerAuthCandidate, 0, len(req.Candidates))
+	disabled := false
 	for _, candidate := range req.Candidates {
-		if candidate.ID != "" && shareable(candidate) {
+		if candidate.ID == "" {
+			continue
+		}
+		if schedulerWeight(candidate) <= 0 {
+			disabled = true
+			continue
+		}
+		active = append(active, candidate)
+		if shareable(candidate) {
 			eligible = append(eligible, candidate)
 		}
 	}
@@ -97,17 +174,16 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 		mode = modeLegacy
 	}
 
-	legacyPool := highestTier(req.Candidates, eligible)
+	legacyPool := highestTier(active, eligible)
 	if engine == nil || mode == modeLegacy {
 		if len(legacyPool) == 0 {
-			// Best-effort sharing policy: preserve the host fallback.
-			return pluginapi.SchedulerPickResponse{Handled: false}
+			return s.fallback(active, disabled)
 		}
 		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: s.rotate(legacyPool)}
 	}
 	if mode == modeClaudeSimple {
 		if len(legacyPool) == 0 {
-			return pluginapi.SchedulerPickResponse{Handled: false}
+			return s.fallback(active, disabled)
 		}
 		claudePool := make([]pluginapi.SchedulerAuthCandidate, 0, len(legacyPool))
 		for _, candidate := range legacyPool {
@@ -131,7 +207,7 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 	}
 	if mode == modeShadow {
 		if len(legacyPool) == 0 {
-			return pluginapi.SchedulerPickResponse{Handled: false}
+			return s.fallback(active, disabled)
 		}
 		legacyID := s.rotate(legacyPool)
 		// Shadow retains optimizer-vs-legacy telemetry. Claude requests use the
@@ -161,11 +237,11 @@ func (s *scheduler) pick(req pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 		return pluginapi.SchedulerPickResponse{Handled: true, AuthID: legacyID}
 	}
 	if len(optimizerPool) == 0 {
-		return pluginapi.SchedulerPickResponse{Handled: false}
+		return s.fallback(active, disabled)
 	}
 	decision := engine.Pick(req.Model, optimizerCandidates(optimizerPool), "")
 	if decision.AuthID == "" {
-		return pluginapi.SchedulerPickResponse{Handled: false}
+		return s.fallback(active, disabled)
 	}
 	return pluginapi.SchedulerPickResponse{Handled: true, AuthID: decision.AuthID}
 }

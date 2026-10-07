@@ -15,13 +15,30 @@ C ABI methods. It does not override the host's fallback behavior.
 | No owner and no sharing flag (ordinary administrator credential) | Eligible |
 
 Legacy string values `"true"` and `"false"` are also supported. Among eligible
-candidates, the plugin sorts IDs and rotates with a concurrency-safe global
-cursor. There is no owner-only exception: an unshared credential is excluded even
+candidates, the plugin rotates with the host's smooth weighted round-robin
+(sorted IDs, one concurrency-safe global state), so a 3:1 weight yields
+`a, a, b, a`. There is no owner-only exception: an unshared credential is excluded even
 for its owner when the plugin handles selection. Each call reads the current
 candidate snapshot, so changing the flag requires no plugin restart.
 
+## Credential weights
+
+The plugin reads the host credential `weight` (attribute, then metadata;
+default 1, maximum 1,000,000) in every mode, regardless of the host
+`routing.strategy`. Credentials with a non-positive weight are removed before
+priority tiers are computed. In `optimizer` mode, and for the optimizer-executed
+Claude picks of `shadow` and `claude-simple`, weights add a bounded smooth
+weighted round-robin preference (at most ±0.25 request values): equally scored
+candidates are served in exact weight proportion, while health, latency, quota
+cost, and admissibility still decide when candidates differ materially. Pools
+whose candidates all share one weight keep the pure optimizer decision.
+
 When no eligible candidate is supplied, the plugin returns `Handled: false`.
-**The host may then select an unshared credential.** Disabling/unloading the
+**The host may then select an unshared credential.** Because the host only
+excludes weight-0 credentials under `weighted-round-robin`, the plugin serves
+that fallback itself whenever a weight-0 candidate was offered: it rotates over
+the highest tier of the remaining candidates, or rejects with
+`auth_unavailable` when every candidate has a non-positive weight. Disabling/unloading the
 plugin, plugin panic recovery, or a higher-priority scheduler can also leave
 selection to the host. This is intentionally not an access isolation boundary.
 
@@ -40,9 +57,9 @@ highest-priority active scheduler plugin runs; scheduler plugins are not chained
 
 | `mode` | Selection executed | Optimizer |
 | --- | --- | --- |
-| `legacy` (default) | Sharing filter, then sorted-ID rotation | Off; no usage capability is registered |
+| `legacy` (default) | Sharing filter, then smooth weighted rotation | Off; no usage capability is registered |
 | `shadow` | Same as `legacy` | Observes usage, scores every pick, records agreement, reserves on the executed credential |
-| `optimizer` | Optimizer argmax among eligible candidates | On |
+| `optimizer` | Optimizer argmax among eligible candidates (bounded weight preference) | On |
 | `claude-simple` | Claude weekly pacing; legacy rotation for other providers | On for Claude |
 
 Sharing policy applies in every mode: the optimizer only ranks shareable

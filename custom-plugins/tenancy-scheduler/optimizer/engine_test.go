@@ -289,3 +289,46 @@ func TestEngineUsesExpiringShortCapacityWhenWeeklyIsAmple(t *testing.T) {
 		t.Fatalf("decision = %+v, want a (use-it-or-lose-it); prices=%v", decision, engine.Prices().Prices)
 	}
 }
+
+func TestEngineWeightsAreProportionalAmongEqualCandidates(t *testing.T) {
+	e, _ := newTestEngine(t, nil)
+	candidates := []Candidate{
+		{ID: "a", Provider: "codex", Account: "A", Weight: 3},
+		{ID: "b", Provider: "codex", Account: "B", Weight: 1},
+	}
+	// Each cycle of four picks serves the configured 3:1 ratio exactly.
+	for cycle := 0; cycle < 25; cycle++ {
+		counts := map[string]int{}
+		for i := 0; i < 4; i++ {
+			counts[e.Pick("gpt-5", candidates, "").AuthID]++
+		}
+		if counts["a"] != 3 || counts["b"] != 1 {
+			t.Fatalf("cycle %d counts = %v, want a:3 b:1", cycle, counts)
+		}
+	}
+}
+
+func TestEngineWeightBiasIsBounded(t *testing.T) {
+	e, _ := newTestEngine(t, nil)
+	// A failing heavy account must not outrank a healthy light account just
+	// because of its configured weight.
+	for i := 0; i < 50; i++ {
+		e.RecordUsage(Usage{AuthID: "heavy", Provider: "codex", Model: "gpt-5", Failed: true, StatusCode: 500,
+			RequestedAt: testEpoch, CompletedAt: testEpoch})
+		e.RecordUsage(Usage{AuthID: "light", Provider: "codex", Model: "gpt-5",
+			RequestedAt: testEpoch, CompletedAt: testEpoch})
+	}
+	candidates := []Candidate{
+		{ID: "heavy", Provider: "codex", Account: "H", Weight: 1_000_000},
+		{ID: "light", Provider: "codex", Account: "L", Weight: 1},
+	}
+	heavy := 0
+	for i := 0; i < 100; i++ {
+		if e.Pick("gpt-5", candidates, "").AuthID == "heavy" {
+			heavy++
+		}
+	}
+	if heavy > 0 {
+		t.Fatalf("failing heavy account picked %d times", heavy)
+	}
+}

@@ -18,6 +18,9 @@ const generationTolerance = 90 * time.Second
 type Candidate struct {
 	ID       string
 	Provider string
+	// Weight is the host-configured scheduling weight. The plugin filters
+	// non-positive values; the engine treats them as the default weight 1.
+	Weight int64
 	// Account is a stable upstream account identity. Duplicate credential files
 	// of the same account share it, so their capacity is not double counted.
 	Account string
@@ -132,6 +135,10 @@ type Engine struct {
 	telemetry        Telemetry
 	telemetryHistory []Telemetry
 	cursor           uint64
+	// weightCredits holds smooth weighted round-robin credits per hashed auth
+	// ID; weightOf detects weight reconfiguration. Both are transient.
+	weightCredits map[string]int64
+	weightOf      map[string]int64
 
 	prices atomic.Pointer[PriceSnapshot]
 }
@@ -158,6 +165,9 @@ func NewEngine(cfg Config, now func() time.Time) *Engine {
 		reservations: make(map[string][]reservationGroup),
 		reserved:     make(map[string]float64),
 		telemetry:    newTelemetry("", now()),
+
+		weightCredits: make(map[string]int64),
+		weightOf:      make(map[string]int64),
 	}
 }
 
@@ -712,6 +722,7 @@ func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs 
 
 	snapshot := e.prices.Load()
 	reserved := e.reservedLocked()
+	weightTotal := e.accrueWeightCreditsLocked(candidates)
 	z := zScore(e.cfg.Epsilon)
 	results := make([]scored, 0, len(candidates))
 	maxKnownCost := 0.0
@@ -729,6 +740,9 @@ func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs 
 		}
 		result := scored{candidate: candidate, admissible: true, margin: math.Inf(1)}
 		result.score = e.cfg.RequestValue*success - e.cfg.LambdaLatency*latency - e.cfg.LambdaFailure*(1-success)
+		if weightTotal > 0 {
+			result.score += e.cfg.RequestValue * e.weightBiasLocked(candidate.ID, weightTotal)
+		}
 		views := e.accountWindowsLocked(account, provider, now)
 		if provider == "claude" && e.cfg.ClaudeWeeklySurplusWeight > 0 {
 			weight := claudeWeeklyWeight(e.weeklySurplusLocked(views, class, reserved, now), e.cfg.ClaudeWeeklySurplusWeight)
@@ -819,6 +833,13 @@ func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs 
 			reserveIndex = best
 		}
 	}
+	if weightTotal > 0 {
+		executedID := ""
+		if reserveIndex >= 0 {
+			executedID = results[reserveIndex].candidate.ID
+		}
+		e.settleWeightCreditsLocked(candidates, executedID, weightTotal)
+	}
 	if reserveIndex >= 0 {
 		id := results[reserveIndex].candidate.ID
 		group := reservationGroup{at: now, items: results[reserveIndex].amounts, epochID: e.telemetry.EpochID}
@@ -832,6 +853,75 @@ func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs 
 }
 
 const scoreTieTolerance = 1e-9
+
+func candidateWeight(candidate Candidate) int64 {
+	if candidate.Weight <= 0 {
+		return 1
+	}
+	return candidate.Weight
+}
+
+// accrueWeightCreditsLocked runs the accrual step of smooth weighted
+// round-robin and returns the total weight. It returns 0, leaving scores and
+// credits untouched, when every candidate has the same weight, so unweighted
+// pools keep the pure optimizer decision.
+func (e *Engine) accrueWeightCreditsLocked(candidates []Candidate) int64 {
+	uniform := true
+	for _, candidate := range candidates[1:] {
+		if candidateWeight(candidate) != candidateWeight(candidates[0]) {
+			uniform = false
+			break
+		}
+	}
+	if uniform {
+		return 0
+	}
+	var total int64
+	for _, candidate := range candidates {
+		key, weight := hashAuthID(candidate.ID), candidateWeight(candidate)
+		if previous, ok := e.weightOf[key]; ok && previous != weight {
+			// A configuration change restarts the sequence, as the host does.
+			clear(e.weightCredits)
+		}
+		e.weightOf[key] = weight
+		total += weight
+	}
+	for _, candidate := range candidates {
+		e.weightCredits[hashAuthID(candidate.ID)] += candidateWeight(candidate)
+	}
+	return total
+}
+
+// settleWeightCreditsLocked charges the executed candidate the total weight.
+// Without an executed candidate it reverts the accrual. Credits are clamped to
+// one cycle so an account the optimizer avoided (for example while unhealthy)
+// cannot accumulate a backlog and receive a burst once it recovers.
+func (e *Engine) settleWeightCreditsLocked(candidates []Candidate, executedID string, total int64) {
+	if executedID != "" {
+		e.weightCredits[hashAuthID(executedID)] -= total
+	}
+	for _, candidate := range candidates {
+		key := hashAuthID(candidate.ID)
+		if executedID == "" {
+			e.weightCredits[key] -= candidateWeight(candidate)
+		}
+		e.weightCredits[key] = max(-total, min(total, e.weightCredits[key]))
+	}
+}
+
+// weightBiasScale bounds the weight preference to ±0.25 request values (0.5
+// in total), so a configured weight overrides at most a one-third difference
+// in success probability under default costs.
+const weightBiasScale = 0.25
+
+// weightBiasLocked maps a credit to [-weightBiasScale, weightBiasScale]. The
+// mapping is monotonic, so among equally scored candidates the largest credit
+// wins, which reproduces smooth weighted round-robin proportions exactly. It
+// never changes admissibility, so quota chance constraints stay authoritative.
+func (e *Engine) weightBiasLocked(authID string, total int64) float64 {
+	bias := float64(e.weightCredits[hashAuthID(authID)]) / float64(total)
+	return weightBiasScale * math.Max(-1, math.Min(1, bias))
+}
 
 // selectLocked returns the admissible argmax score; exact ties rotate for
 // fairness. Without an admissible candidate, it returns the smallest violation.
@@ -928,6 +1018,8 @@ func (e *Engine) Prune() {
 			delete(e.authSeen, authID)
 			delete(e.health, authID)
 			delete(e.identities, authID)
+			delete(e.weightCredits, authID)
+			delete(e.weightOf, authID)
 			for reservationAuthID, groups := range e.reservations {
 				if hashAuthID(reservationAuthID) != authID {
 					continue

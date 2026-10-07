@@ -102,6 +102,115 @@ func TestLegacyKeepsTierSemanticsWhenCandidatesSpanPriorities(t *testing.T) {
 	}
 }
 
+func TestLegacyAppliesWeightsWithinDefaultPriorityTier(t *testing.T) {
+	var s scheduler
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		candidate("a", 0, nil),
+		candidate("b", 0, nil),
+	}}
+	req.Candidates[0].Attributes = map[string]string{"weight": "3"}
+	req.Candidates[1].Attributes = map[string]string{"weight": "1"}
+	// Smooth weighted round-robin interleaves picks like the host scheduler.
+	want := []string{"a", "a", "b", "a", "a", "a", "b", "a"}
+	for i, expected := range want {
+		if got := s.pick(req); !got.Handled || got.AuthID != expected {
+			t.Fatalf("pick %d = %+v, want %s", i, got, expected)
+		}
+	}
+}
+
+func TestSchedulerWeightParsing(t *testing.T) {
+	cases := []struct {
+		name  string
+		attrs map[string]string
+		meta  map[string]any
+		want  int64
+	}{
+		{name: "default", want: 1},
+		{name: "attribute", attrs: map[string]string{"weight": " 4 "}, want: 4},
+		{name: "attribute wins", attrs: map[string]string{"weight": "2"}, meta: map[string]any{"weight": 9}, want: 2},
+		{name: "attribute zero", attrs: map[string]string{"weight": "0"}, want: 0},
+		{name: "attribute invalid", attrs: map[string]string{"weight": "x"}, want: 0},
+		{name: "attribute above max", attrs: map[string]string{"weight": "1000001"}, want: 0},
+		{name: "metadata json number", meta: map[string]any{"weight": float64(3)}, want: 3},
+		{name: "metadata fraction", meta: map[string]any{"weight": 1.5}, want: 0},
+		{name: "metadata negative", meta: map[string]any{"weight": -2}, want: 0},
+		{name: "metadata empty string", meta: map[string]any{"weight": " "}, want: 1},
+		{name: "metadata string", meta: map[string]any{"weight": "5"}, want: 5},
+	}
+	for _, tc := range cases {
+		got := schedulerWeight(pluginapi.SchedulerAuthCandidate{Attributes: tc.attrs, Metadata: tc.meta})
+		if got != tc.want {
+			t.Errorf("%s: weight = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func weighted(c pluginapi.SchedulerAuthCandidate, weight string) pluginapi.SchedulerAuthCandidate {
+	c.Attributes = map[string]string{"weight": weight}
+	return c
+}
+
+func TestZeroWeightIsExcludedBeforeTiers(t *testing.T) {
+	var s scheduler
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		weighted(candidate("top-disabled", 10, nil), "0"),
+		candidate("low", 0, nil),
+	}}
+	for i := 0; i < 3; i++ {
+		if got := s.pick(req); !got.Handled || got.AuthID != "low" {
+			t.Fatalf("pick %d = %+v, want low", i, got)
+		}
+	}
+}
+
+func TestZeroWeightIsNotRevivedByHostFallback(t *testing.T) {
+	var s scheduler
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		weighted(candidate("shared-disabled", 0, nil), "0"),
+		candidate("private", 0, map[string]any{"owner_user_id": "u"}),
+	}}
+	// The sharing policy has no pool, but the host fallback could pick the
+	// disabled credential, so the plugin serves the fallback itself.
+	if got := s.pick(req); !got.Handled || got.Reject || got.AuthID != "private" {
+		t.Fatalf("pick = %+v, want plugin fallback to private", got)
+	}
+
+	req.Candidates[1] = weighted(req.Candidates[1], "0")
+	if got := s.pick(req); !got.Handled || !got.Reject || got.AuthID != "" {
+		t.Fatalf("pick = %+v, want reject when every credential is disabled", got)
+	}
+}
+
+func TestSharingFallbackStaysWithHostWithoutDisabledCredentials(t *testing.T) {
+	var s scheduler
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		candidate("private", 0, map[string]any{"owner_user_id": "u"}),
+	}}
+	if got := s.pick(req); got.Handled {
+		t.Fatalf("pick = %+v, want host fallback", got)
+	}
+}
+
+func TestOptimizerModeHonorsWeightsProportionally(t *testing.T) {
+	s := newModeScheduler(t, modeOptimizer, false)
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		weighted(candidate("a", 0, nil), "3"),
+		weighted(candidate("b", 0, nil), "1"),
+	}}
+	counts := map[string]int{}
+	for i := 0; i < 400; i++ {
+		got := s.pick(req)
+		if !got.Handled {
+			t.Fatalf("pick %d not handled", i)
+		}
+		counts[got.AuthID]++
+	}
+	if counts["a"] != 300 || counts["b"] != 100 {
+		t.Fatalf("counts = %v, want a:300 b:100", counts)
+	}
+}
+
 func newModeScheduler(t *testing.T, mode string, across bool) *scheduler {
 	t.Helper()
 	cfg := defaultPluginConfig()
