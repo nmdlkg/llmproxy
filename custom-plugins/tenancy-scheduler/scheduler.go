@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,9 @@ type scheduler struct {
 }
 
 func shareable(candidate pluginapi.SchedulerAuthCandidate) bool {
+	if schedulerWeight(candidate) <= 0 {
+		return false
+	}
 	if value, exists := candidate.Metadata["shared"]; exists {
 		switch shared := value.(type) {
 		case bool:
@@ -42,6 +46,35 @@ func shareable(candidate pluginapi.SchedulerAuthCandidate) bool {
 	}
 	owner, _ := candidate.Metadata["owner_user_id"].(string)
 	return strings.TrimSpace(owner) == ""
+}
+
+func schedulerWeight(candidate pluginapi.SchedulerAuthCandidate) float64 {
+	if raw, ok := candidate.Attributes["weight"]; ok && strings.TrimSpace(raw) != "" {
+		weight, errParse := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if errParse != nil {
+			return 0
+		}
+		return float64(weight)
+	}
+	if raw, ok := candidate.Metadata["weight"]; ok {
+		switch value := raw.(type) {
+		case int:
+			return float64(value)
+		case int64:
+			return float64(value)
+		case float64:
+			if value == float64(int64(value)) {
+				return value
+			}
+		case string:
+			weight, errParse := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if errParse == nil {
+				return float64(weight)
+			}
+		}
+		return 0
+	}
+	return 1
 }
 
 // highestTier restricts eligible candidates to the highest priority among all
@@ -70,15 +103,36 @@ func (s *scheduler) rotate(eligible []pluginapi.SchedulerAuthCandidate) string {
 	}
 	sorted := append([]pluginapi.SchedulerAuthCandidate(nil), eligible...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-	index := (s.cursor.Add(1) - 1) % uint64(len(sorted))
-	return sorted[index].ID
+	var total uint64
+	for _, candidate := range sorted {
+		weight := schedulerWeight(candidate)
+		if weight > 0 {
+			total += uint64(weight)
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	position := (s.cursor.Add(1) - 1) % total
+	for _, candidate := range sorted {
+		weight := schedulerWeight(candidate)
+		if weight <= 0 {
+			continue
+		}
+		w := uint64(weight)
+		if position < w {
+			return candidate.ID
+		}
+		position -= w
+	}
+	return sorted[len(sorted)-1].ID
 }
 
 func optimizerCandidates(eligible []pluginapi.SchedulerAuthCandidate) []optimizer.Candidate {
 	out := make([]optimizer.Candidate, 0, len(eligible))
 	for _, candidate := range eligible {
 		account, _ := candidate.Metadata["account_identity"].(string)
-		out = append(out, optimizer.Candidate{ID: candidate.ID, Provider: candidate.Provider, Account: account})
+		out = append(out, optimizer.Candidate{ID: candidate.ID, Provider: candidate.Provider, Account: account, Weight: schedulerWeight(candidate)})
 	}
 	return out
 }

@@ -18,6 +18,9 @@ const generationTolerance = 90 * time.Second
 type Candidate struct {
 	ID       string
 	Provider string
+	// Weight is the host-configured scheduling weight. The plugin filters
+	// non-positive values before constructing optimizer candidates.
+	Weight float64
 	// Account is a stable upstream account identity. Duplicate credential files
 	// of the same account share it, so their capacity is not double counted.
 	Account string
@@ -729,6 +732,11 @@ func (e *Engine) pick(model string, candidates []Candidate, executed, reserveAs 
 		}
 		result := scored{candidate: candidate, admissible: true, margin: math.Inf(1)}
 		result.score = e.cfg.RequestValue*success - e.cfg.LambdaLatency*latency - e.cfg.LambdaFailure*(1-success)
+		if candidate.Weight > 0 && candidate.Weight != 1 {
+			// A logarithmic bonus preserves the optimizer's quota/health costs
+			// while retaining the configured proportional preference.
+			result.score += e.cfg.RequestValue * math.Log(candidate.Weight)
+		}
 		views := e.accountWindowsLocked(account, provider, now)
 		if provider == "claude" && e.cfg.ClaudeWeeklySurplusWeight > 0 {
 			weight := claudeWeeklyWeight(e.weeklySurplusLocked(views, class, reserved, now), e.cfg.ClaudeWeeklySurplusWeight)

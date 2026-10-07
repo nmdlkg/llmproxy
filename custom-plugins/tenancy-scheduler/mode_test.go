@@ -102,6 +102,22 @@ func TestLegacyKeepsTierSemanticsWhenCandidatesSpanPriorities(t *testing.T) {
 	}
 }
 
+func TestLegacyAppliesWeightsWithinDefaultPriorityTier(t *testing.T) {
+	var s scheduler
+	req := pluginapi.SchedulerPickRequest{Model: "gpt-5", Candidates: []pluginapi.SchedulerAuthCandidate{
+		candidate("a", 0, nil),
+		candidate("b", 0, nil),
+	}}
+	req.Candidates[0].Attributes = map[string]string{"weight": "3"}
+	req.Candidates[1].Attributes = map[string]string{"weight": "1"}
+	want := []string{"a", "a", "a", "b"}
+	for i, expected := range want {
+		if got := s.pick(req); !got.Handled || got.AuthID != expected {
+			t.Fatalf("pick %d = %+v, want %s", i, got, expected)
+		}
+	}
+}
+
 func newModeScheduler(t *testing.T, mode string, across bool) *scheduler {
 	t.Helper()
 	cfg := defaultPluginConfig()
